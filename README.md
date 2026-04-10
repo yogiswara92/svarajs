@@ -1,4 +1,5 @@
 <div align="center">
+![SvaraJS](SvaraJS.png)
 
 # @yesvara/svara
 
@@ -53,7 +54,7 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 | **Express-compatible** | `agent.handler()` drops into any existing app |
 | **Built-in database** | Persistent SQLite for users, sessions, RAG chunks, and state |
 | **RAG per agent** | Each agent has isolated knowledge base, no cross-contamination |
-| **RAG persistence** | Vector embeddings stored in SQLite, survive restarts, auto-dedup |
+| **RAG persistence** | Vector embeddings stored in SQLite, auto-dedup |
 | **User tracking** | Auto-tracks users and sessions with timestamps |
 | **CLI included** | `svara new`, `svara dev`, `svara build` |
 
@@ -261,6 +262,43 @@ await salesBot.start();
 - Each agent queries only its own chunks
 - Deduplication happens per agent (same content in different agents is OK)
 - Perfect for multi-agent systems with different domains
+
+**Accessing Retrieved Documents:**
+
+The `/chat` endpoint returns `retrievedDocuments` showing which knowledge was used:
+
+```ts
+const response = await fetch('http://localhost:3000/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    message: 'What is the pricing?',
+    sessionId: 'user-123'
+  })
+});
+
+const result = await response.json();
+// {
+//   response: "Our pricing starts at...",
+//   retrievedDocuments: [
+//     {
+//       source: "./docs/pricing.md",
+//       score: 0.89,        // relevance (0-1)
+//       excerpt: "# Pricing\n\nOur plans start at..."
+//     },
+//     {
+//       source: "./docs/faq.md",
+//       score: 0.76,
+//       excerpt: "## Is there a free trial?\n\nYes, 14 days..."
+//     }
+//   ]
+// }
+```
+
+The `retrievedDocuments` field shows:
+- **source**: File path of the matching document
+- **score**: Cosine similarity (0-1, higher = more relevant)
+- **excerpt**: First 150 characters of the matched chunk
 
 ### User & Session Tracking
 
