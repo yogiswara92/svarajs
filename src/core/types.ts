@@ -106,6 +106,68 @@ export interface SessionStore {
   updatedAt: Date;
 }
 
+// ─── RAG Internals ───────────────────────────────────────────────────────────
+
+export type DocumentType = 'text' | 'markdown' | 'pdf' | 'html' | 'json' | 'docx';
+
+export interface Document {
+  id: string;
+  content: string;
+  type: DocumentType;
+  source: string;
+  metadata: {
+    filename: string;
+    extension: string;
+    size: number;
+    lastModified: string;
+  };
+}
+
+export interface DocumentChunk {
+  id: string;
+  documentId: string;
+  content: string;
+  index: number;
+  metadata: {
+    filename: string;
+    extension: string;
+    size: number;
+    lastModified: string;
+    chunkIndex: number;
+    strategy: 'fixed' | 'sentence' | 'paragraph';
+    charCount: number;
+  };
+}
+
+export interface RAGConfig {
+  embeddings?: {
+    provider: 'openai' | 'ollama';
+    apiKey?: string;
+    model?: string;
+  };
+  chunking?: {
+    strategy?: 'fixed' | 'sentence' | 'paragraph';
+    size?: number;
+    overlap?: number;
+  };
+  retrieval?: {
+    threshold?: number;
+  };
+}
+
+export interface RetrievedContext {
+  chunks: DocumentChunk[];
+  query: string;
+  totalFound: number;
+}
+
+export interface RAGRetriever {
+  init(config: RAGConfig): Promise<void>;
+  addDocuments(filePaths: string[]): Promise<void>;
+  retrieve(query: string, topK?: number): Promise<string>;
+  retrieveChunks(query: string, topK?: number): Promise<RetrievedContext>;
+}
+
 // ─── Channel Internals ───────────────────────────────────────────────────────
 
 export type ChannelName = 'web' | 'whatsapp' | 'telegram' | 'discord' | 'slack';

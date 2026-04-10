@@ -10,6 +10,7 @@
 
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
 import type { IncomingMessage, ChannelName } from '../core/types.js';
+import type express from 'express';
 
 export interface WhatsAppChannelConfig {
   /** WhatsApp Cloud API access token */
@@ -57,7 +58,7 @@ export class WhatsAppChannel implements SvaraChannel {
 
     // Get the web channel's Express app to attach webhook routes
     const webChannel = (agent as unknown as {
-      channels: Map<string, { app?: ReturnType<typeof import('express')['default']> }>;
+      channels: Map<string, { app?: express.Application }>;
     }).channels?.get('web');
 
     const app = (webChannel as { app?: { post: (...a: unknown[]) => void; get: (...a: unknown[]) => void } })?.app;

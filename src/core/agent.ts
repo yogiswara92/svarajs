@@ -48,6 +48,7 @@ import type {
   IncomingMessage,
   ChannelName,
   TokenUsage,
+  RAGRetriever,
 } from './types.js';
 import { ConversationMemory } from '../memory/conversation.js';
 import { ContextBuilder } from '../memory/context.js';
@@ -601,3 +602,6 @@ export class SvaraAgent extends EventEmitter {
     }
   }
 }
+
+// Export RAGRetriever interface
+export type { RAGRetriever };
