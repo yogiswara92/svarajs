@@ -1,5 +1,5 @@
 <div align="center">
-![SvaraJS](SvaraJS.png)
+<img src="SvaraJS.png" alt="SvaraJS" width="400">
 
 # @yesvara/svara
 
