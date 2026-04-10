@@ -1,5 +1,5 @@
 <div align="center">
-
+![SvaraJS](svarajs/SvaraJS.png)
 # @yesvara/svara
 
 **Build AI agents in 15 lines. Ship to production.**
