@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 <div align="center">
 
 # @yesvara/svara
@@ -495,3 +496,7 @@ Built with ❤️ for developers who want to ship AI, not fight infrastructure.
 **[Documentation](https://svarajs.dev)** · **[Examples](./examples)** · **[npm](https://npmjs.com/package/@yesvara/svara)**
 
 </div>
+=======
+# svarajs
+SvaraJS si an Agentic AI backend framework for Node.js. Build AI agents in 15 lines of code.  Batteries included: multi-channel support, RAG, memory management, and more.  Powered by Yesvara.
+>>>>>>> 2fd24f9f141b94f6b80f1a8e7939c14dafb17955
