@@ -53,6 +53,7 @@ import type {
 import { ConversationMemory } from '../memory/conversation.js';
 import { ContextBuilder } from '../memory/context.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { SvaraDB } from '../database/sqlite.js';
 import { ToolExecutor } from '../tools/executor.js';
 import type { Tool } from '../types.js';
 
@@ -171,6 +172,7 @@ export class SvaraAgent extends EventEmitter {
   private knowledgeBase: KnowledgeBase | null = null;
   private knowledgePaths: string[] = [];
   private isStarted = false;
+  private db: SvaraDB;
 
   constructor(config: AgentConfig) {
     super();
@@ -178,6 +180,7 @@ export class SvaraAgent extends EventEmitter {
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
     this.verbose = config.verbose ?? false;
+    this.db = new SvaraDB('./data/svara.db');
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
@@ -405,6 +408,58 @@ export class SvaraAgent extends EventEmitter {
     }
   }
 
+  // ─── Internal: User & Session Tracking ───────────────────────────────────────
+
+  private async trackUserAndSession(userId: string, sessionId: string, channel = 'api'): Promise<void> {
+    try {
+      // Track user
+      const existingUser = this.db.query(
+        'SELECT id FROM svara_users WHERE id = ?',
+        [userId]
+      ) as Array<{ id: string }>;
+
+      if (existingUser.length === 0) {
+        // New user
+        this.db.run(
+          `INSERT INTO svara_users (id, display_name, first_seen, last_seen)
+           VALUES (?, ?, unixepoch(), unixepoch())`,
+          [userId, userId]
+        );
+      } else {
+        // Update last_seen
+        this.db.run(
+          'UPDATE svara_users SET last_seen = unixepoch() WHERE id = ?',
+          [userId]
+        );
+      }
+
+      // Track session
+      const existingSession = this.db.query(
+        'SELECT id FROM svara_sessions WHERE id = ?',
+        [sessionId]
+      ) as Array<{ id: string }>;
+
+      if (existingSession.length === 0) {
+        // New session
+        this.db.run(
+          `INSERT INTO svara_sessions (id, user_id, channel, created_at, updated_at)
+           VALUES (?, ?, ?, unixepoch(), unixepoch())`,
+          [sessionId, userId, channel]
+        );
+      } else {
+        // Update updated_at
+        this.db.run(
+          'UPDATE svara_sessions SET updated_at = unixepoch() WHERE id = ?',
+          [sessionId]
+        );
+      }
+
+      this.log('debug', `Tracked user ${userId} with session ${sessionId}`);
+    } catch (error) {
+      this.log('error', `Failed to track user: ${(error as Error).message}`);
+    }
+  }
+
   // ─── Internal: Agentic Loop ───────────────────────────────────────────────
 
   /**
@@ -421,8 +476,12 @@ export class SvaraAgent extends EventEmitter {
   private async run(message: string, options: AgentRunOptions): Promise<AgentRunResult> {
     const startTime = Date.now();
     const sessionId = options.sessionId ?? crypto.randomUUID();
+    const userId = options.userId ?? 'unknown';
 
-    this.emit('message:received', { message, sessionId, userId: options.userId });
+    // Track user and session
+    await this.trackUserAndSession(userId, sessionId);
+
+    this.emit('message:received', { message, sessionId, userId });
 
     // Build LLM message history
     const history = await this.memory.getHistory(sessionId);
@@ -442,7 +501,7 @@ export class SvaraAgent extends EventEmitter {
 
     const internalCtx: InternalAgentContext = {
       sessionId,
-      userId: options.userId ?? 'unknown',
+      userId,
       agentName: this.name,
       history,
       metadata: options.metadata ?? {},
@@ -534,7 +593,8 @@ export class SvaraAgent extends EventEmitter {
       const { glob } = await import('glob');
       const { VectorRetriever } = await import('../rag/retriever.js');
 
-      const retriever = new VectorRetriever();
+      // Create retriever with agent name for isolated RAG per agent
+      const retriever = new VectorRetriever(this.name, this.db);
       await retriever.init({ embeddings: { provider: 'openai' } });
 
       const files: string[] = [];

@@ -61,6 +61,7 @@ export class Chunker {
         id: this.chunkId(document.id, index),
         documentId: document.id,
         content: content.trim(),
+        source: document.source,
         index,
         metadata: {
           ...document.metadata,

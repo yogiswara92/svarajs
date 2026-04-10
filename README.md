@@ -51,7 +51,10 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 | **Tool calling** | Declarative tools with full TypeScript types |
 | **Conversation memory** | Automatic per-session history, configurable window |
 | **Express-compatible** | `agent.handler()` drops into any existing app |
-| **Built-in database** | Zero-config SQLite for state, KV store, and history |
+| **Built-in database** | Persistent SQLite for users, sessions, RAG chunks, and state |
+| **RAG per agent** | Each agent has isolated knowledge base, no cross-contamination |
+| **RAG persistence** | Vector embeddings stored in SQLite, survive restarts, auto-dedup |
+| **User tracking** | Auto-tracks users and sessions with timestamps |
 | **CLI included** | `svara new`, `svara dev`, `svara build` |
 
 ---
@@ -101,16 +104,22 @@ npx tsx src/index.ts
 ```bash
 curl -X POST http://localhost:3000/chat \
   -H "Content-Type: application/json" \
-  -d '{ "message": "Hello! What can you do?", "sessionId": "user-1" }'
+  -d '{
+    "message": "Hello! What can you do?",
+    "userId": "user-1",
+    "sessionId": "user-1-session-1"
+  }'
 ```
 
 ```json
 {
   "response": "Hi! I'm Aria, your AI assistant...",
-  "sessionId": "user-1",
+  "sessionId": "user-1-session-1",
   "usage": { "totalTokens": 142 }
 }
 ```
+
+The agent automatically tracks users and sessions in the SQLite database.
 
 ---
 
@@ -218,6 +227,85 @@ await agent.addKnowledge('./new-policy-2024.pdf');
 ```
 
 Supported formats: **PDF, Markdown, TXT, DOCX, HTML, JSON**
+
+**RAG Persistence & Per-Agent Isolation:**
+
+Vector embeddings are automatically persisted to SQLite. Each agent has its own isolated knowledge base:
+
+```ts
+const supportBot = new SvaraAgent({
+  name: 'SupportBot',
+  model: 'gpt-4o-mini',
+  knowledge: './docs/support',  // Knowledge base 1
+});
+
+const salesBot = new SvaraAgent({
+  name: 'SalesBot',
+  model: 'gpt-4o-mini',
+  knowledge: './docs/sales',    // Knowledge base 2
+});
+
+await supportBot.start();
+await salesBot.start();
+
+// Both agents run simultaneously with isolated RAG:
+// - SupportBot only searches in support docs
+// - SalesBot only searches in sales docs
+// - No cross-contamination, efficient storage
+// - Embeddings persist across restarts
+// - Duplicate content skipped per agent
+```
+
+**How it works:**
+- Documents are embedded and stored in SQLite with agent name
+- Each agent queries only its own chunks
+- Deduplication happens per agent (same content in different agents is OK)
+- Perfect for multi-agent systems with different domains
+
+### User & Session Tracking
+
+Every message automatically tracks the user and their session.
+
+```ts
+// Send message with userId and sessionId
+const result = await agent.process('Help me with my order', {
+  userId: 'user-123',
+  sessionId: 'user-123-conversation-1'
+});
+
+// Database tracks:
+// - svara_users: user-123 (first_seen, last_seen, metadata)
+// - svara_sessions: session details, linked to user-123
+// - svara_messages: conversation history for this session
+```
+
+Query user data:
+
+```ts
+import { SvaraDB } from '@yesvara/svara';
+
+const db = new SvaraDB('./data/svara.db');
+
+// Get all users
+const users = db.query('SELECT * FROM svara_users');
+
+// Get sessions for a user
+const sessions = db.query(
+  'SELECT * FROM svara_sessions WHERE user_id = ?',
+  ['user-123']
+);
+
+// Get chat history for a session
+const messages = db.query(
+  'SELECT * FROM svara_messages WHERE session_id = ? ORDER BY created_at',
+  ['user-123-conversation-1']
+);
+
+// Check RAG chunks (with dedup tracking)
+const chunks = db.query(
+  'SELECT id, content, content_hash FROM svara_chunks LIMIT 10'
+);
+```
 
 ### Channels
 
@@ -372,15 +460,30 @@ $ svara new my-app
 
 ## Built-in Database
 
-Zero-config SQLite for when you need persistent state.
+Persistent SQLite for users, sessions, conversation history, and RAG vectors.
 
 ```ts
 import { SvaraDB } from '@yesvara/svara';
 
-const db = new SvaraDB('./data/agent.db');
+const db = new SvaraDB('./data/svara.db');
 
-// Simple queries
-const users = db.query<User>('SELECT * FROM users WHERE active = ?', [1]);
+// Built-in tables (auto-created):
+// - svara_users: user registry with timestamps
+// - svara_sessions: conversation sessions linked to users
+// - svara_messages: conversation history
+// - svara_chunks: RAG vectors with deduplication
+// - svara_kv: key-value store for app state
+
+// Query users
+const activeUsers = db.query(
+  'SELECT id, display_name, last_seen FROM svara_users WHERE last_seen > unixepoch() - 86400'
+);
+
+// Get conversation history
+const history = db.query(
+  'SELECT role, content FROM svara_messages WHERE session_id = ? ORDER BY created_at',
+  ['session-id']
+);
 
 // Key-value store
 db.kv.set('feature:rag', true);
@@ -446,8 +549,8 @@ Request:
 ```json
 {
   "message": "What is the refund policy?",
-  "sessionId": "user-123",
-  "userId": "alice@example.com"
+  "userId": "alice@example.com",
+  "sessionId": "alice-session-1"
 }
 ```
 
@@ -455,7 +558,7 @@ Response:
 ```json
 {
   "response": "Our refund policy allows returns within 30 days...",
-  "sessionId": "user-123",
+  "sessionId": "alice-session-1",
   "usage": {
     "promptTokens": 312,
     "completionTokens": 89,
@@ -465,7 +568,54 @@ Response:
 }
 ```
 
+**Note:** `userId` and `sessionId` are automatically tracked in the SQLite database for user management and conversation history.
+
 **`GET /health`** — always returns `{ "status": "ok" }`
+
+---
+
+## Database Schema
+
+SvaraJS automatically creates and manages these SQLite tables:
+
+| Table | Purpose | Auto-Managed |
+|-------|---------|--------------|
+| `svara_users` | User registry (first_seen, last_seen, metadata) | ✅ Yes |
+| `svara_sessions` | Conversation sessions linked to users | ✅ Yes |
+| `svara_messages` | Full conversation history per session | ✅ Yes |
+| `svara_chunks` | RAG vectors **isolated per agent** with deduplication | ✅ Yes |
+| `svara_documents` | Document registry and metadata | ✅ Yes |
+| `svara_kv` | Key-value store for app state | ✅ Yes |
+| `svara_meta` | Framework metadata and versions | ✅ Yes |
+
+**RAG Isolation:**
+
+Each agent's RAG data is stored separately using the `agent_name` column:
+
+```ts
+// Query RAG chunks for specific agent
+const supportChunks = db.query(
+  'SELECT COUNT(*) as count FROM svara_chunks WHERE agent_name = ?',
+  ['SupportBot']
+);
+
+const salesChunks = db.query(
+  'SELECT COUNT(*) as count FROM svara_chunks WHERE agent_name = ?',
+  ['SalesBot']
+);
+
+// Export conversation analytics
+db.query(`
+  SELECT u.id, u.display_name, COUNT(m.id) as message_count
+  FROM svara_users u
+  LEFT JOIN svara_messages m ON u.id = (
+    SELECT user_id FROM svara_sessions WHERE id = m.session_id
+  )
+  WHERE u.last_seen > unixepoch() - 86400
+  GROUP BY u.id
+  ORDER BY message_count DESC
+`);
+```
 
 ---
 
@@ -474,7 +624,7 @@ Response:
 Contributions are welcome! Please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
 
 ```bash
-git clone https://github.com/yesvara/svara
+git clone https://github.com/yogiswara92/svarajs
 cd svara
 npm install
 npm run dev

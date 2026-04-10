@@ -28,30 +28,55 @@ CREATE TABLE IF NOT EXISTS svara_messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session
   ON svara_messages (session_id, created_at);
 
--- Session metadata
-CREATE TABLE IF NOT EXISTS svara_sessions (
+-- User registry
+CREATE TABLE IF NOT EXISTS svara_users (
   id          TEXT PRIMARY KEY,
-  user_id     TEXT,
-  channel     TEXT NOT NULL,
-  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
-  updated_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  email       TEXT,
+  display_name TEXT,
+  first_seen  INTEGER NOT NULL DEFAULT (unixepoch()),
+  last_seen   INTEGER NOT NULL DEFAULT (unixepoch()),
   metadata    TEXT DEFAULT '{}'
 );
 
--- Vector store chunks for RAG
+CREATE INDEX IF NOT EXISTS idx_users_email
+  ON svara_users (email);
+
+-- Session metadata
+CREATE TABLE IF NOT EXISTS svara_sessions (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL,
+  channel     TEXT NOT NULL,
+  created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  updated_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+  metadata    TEXT DEFAULT '{}',
+  FOREIGN KEY (user_id) REFERENCES svara_users(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user
+  ON svara_sessions (user_id);
+
+-- Vector store chunks for RAG (per agent)
 CREATE TABLE IF NOT EXISTS svara_chunks (
   id           TEXT PRIMARY KEY,
+  agent_name   TEXT NOT NULL,   -- Separate RAG per agent
   document_id  TEXT NOT NULL,
   content      TEXT NOT NULL,
+  content_hash TEXT NOT NULL,   -- MD5 hash of content for deduplication
   chunk_index  INTEGER NOT NULL,
-  embedding    BLOB,          -- stored as binary float32 array
+  embedding    TEXT,            -- stored as JSON string of float array
   source       TEXT NOT NULL,
   metadata     TEXT DEFAULT '{}',
   created_at   INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunks_document
-  ON svara_chunks (document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_agent
+  ON svara_chunks (agent_name);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_agent_document
+  ON svara_chunks (agent_name, document_id);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_content_hash
+  ON svara_chunks (content_hash);
 
 -- Document registry
 CREATE TABLE IF NOT EXISTS svara_documents (

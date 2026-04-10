@@ -127,6 +127,7 @@ export interface DocumentChunk {
   id: string;
   documentId: string;
   content: string;
+  source: string;
   index: number;
   metadata: {
     filename: string;

@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yogiswara92/svara"
+    "url": "https://github.com/yogiswara92/svarajs"
   },
   "homepage": "https://svarajs.yesvara.com",
   "publishConfig": {
