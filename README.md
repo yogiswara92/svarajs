@@ -1,0 +1,497 @@
+<div align="center">
+
+# @yesvara/svara
+
+**Build AI agents in 15 lines. Ship to production.**
+
+A batteries-included Node.js framework for building agentic AI backends —  
+multi-channel, RAG-ready, and designed for developers who value simplicity.
+
+[![npm version](https://img.shields.io/npm/v/@yesvara/svara?color=0ea5e9&label=npm)](https://www.npmjs.com/package/@yesvara/svara)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://typescriptlang.org)
+
+</div>
+
+---
+
+## Why SvaraJS?
+
+Most AI frameworks make you think about infrastructure. SvaraJS makes you think about your agent.
+
+```ts
+import { SvaraApp, SvaraAgent } from '@yesvara/svara';
+
+const app = new SvaraApp();
+
+const agent = new SvaraAgent({
+  name: 'Support Bot',
+  model: 'gpt-4o-mini',       // provider auto-detected
+  knowledge: './docs',         // PDF, MD, TXT — just point to a folder
+});
+
+app.route('/chat', agent.handler());
+app.listen(3000);
+// Done. Your agent handles 1000 conversations.
+```
+
+That's it. No pipeline setup. No embedding boilerplate. No webhook configuration.  
+**Convention over configuration — like Express, but for AI.**
+
+---
+
+## Features
+
+| | |
+|---|---|
+| **Zero-config LLM** | Pass a model name — provider is auto-detected |
+| **Instant RAG** | Point to a folder, documents are indexed automatically |
+| **Multi-channel** | WhatsApp, Telegram, and Web from one agent |
+| **Tool calling** | Declarative tools with full TypeScript types |
+| **Conversation memory** | Automatic per-session history, configurable window |
+| **Express-compatible** | `agent.handler()` drops into any existing app |
+| **Built-in database** | Zero-config SQLite for state, KV store, and history |
+| **CLI included** | `svara new`, `svara dev`, `svara build` |
+
+---
+
+## Quick Start
+
+### 1. Install
+
+```bash
+npm install @yesvara/svara
+```
+
+### 2. Set your API key
+
+```bash
+# .env
+OPENAI_API_KEY=sk-...
+```
+
+### 3. Create your agent
+
+```ts
+// src/index.ts
+import 'dotenv/config';
+import { SvaraApp, SvaraAgent } from '@yesvara/svara';
+
+const app = new SvaraApp({ cors: true });
+
+const agent = new SvaraAgent({
+  name: 'Aria',
+  model: 'gpt-4o-mini',
+  systemPrompt: 'You are Aria, a helpful and friendly AI assistant.',
+});
+
+app.route('/chat', agent.handler());
+app.listen(3000);
+```
+
+### 4. Run
+
+```bash
+npx tsx src/index.ts
+```
+
+### 5. Chat
+
+```bash
+curl -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{ "message": "Hello! What can you do?", "sessionId": "user-1" }'
+```
+
+```json
+{
+  "response": "Hi! I'm Aria, your AI assistant...",
+  "sessionId": "user-1",
+  "usage": { "totalTokens": 142 }
+}
+```
+
+---
+
+## Supported Models
+
+SvaraJS auto-detects the LLM provider from the model name. No extra config needed.
+
+| Model string | Provider | Env key |
+|---|---|---|
+| `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo` | OpenAI | `OPENAI_API_KEY` |
+| `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-*` | Anthropic | `ANTHROPIC_API_KEY` |
+| `llama3`, `mistral`, `gemma`, `phi3` | Ollama (local) | *(none)* |
+| `llama-3.1-70b-versatile`, `mixtral-8x7b` | Groq | `GROQ_API_KEY` |
+
+```ts
+// Switch models in one line — no other changes needed
+const agent = new SvaraAgent({ name: 'Aria', model: 'claude-opus-4-6' });
+const agent = new SvaraAgent({ name: 'Aria', model: 'llama3' });         // local
+const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o-mini' });   // cheap & fast
+```
+
+---
+
+## Core Concepts
+
+### SvaraAgent
+
+The central class. Configure once, use everywhere.
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Support Bot',         // Display name (used in logs & system prompt)
+  model: 'gpt-4o-mini',        // LLM model — provider auto-detected
+  systemPrompt: 'You are...', // Optional — sensible default based on name
+  knowledge: './docs',         // Optional — folder/glob for RAG
+  memory: { window: 20 },      // Optional — conversation history window
+  tools: [myTool],             // Optional — functions the agent can call
+  temperature: 0.7,            // Optional — creativity (0–2)
+  verbose: true,               // Optional — detailed logs
+});
+```
+
+### SvaraApp
+
+A minimal HTTP server. Built on Express, zero config to start.
+
+```ts
+const app = new SvaraApp({
+  cors: true,           // Allow all origins (or pass a specific origin)
+  apiKey: 'secret-key', // Optional bearer token auth
+});
+
+app.route('/chat', agent.handler());   // Mount agent on a path
+app.use(myMiddleware);                 // Add Express middleware
+app.listen(3000);
+
+// Access the raw Express app for advanced config
+const expressApp = app.getExpressApp();
+```
+
+### Tools (`createTool`)
+
+Give your agent superpowers. The LLM decides when to call each tool.
+
+```ts
+import { createTool } from '@yesvara/svara';
+
+const weatherTool = createTool({
+  name: 'get_weather',
+  description: 'Get current weather for a city. Use when the user asks about weather.',
+  parameters: {
+    city: { type: 'string', description: 'City name', required: true },
+    units: { type: 'string', description: 'celsius or fahrenheit', enum: ['celsius', 'fahrenheit'] },
+  },
+  async run({ city, units = 'celsius' }) {
+    const data = await fetchWeather(city as string);
+    return { temp: data.temp, condition: data.description };
+  },
+});
+
+agent.addTool(weatherTool);
+
+// Chainable
+agent
+  .addTool(weatherTool)
+  .addTool(emailTool)
+  .addTool(databaseTool);
+```
+
+### RAG (Knowledge Base)
+
+Point to your documents. The agent reads them automatically.
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Support Bot',
+  model: 'gpt-4o-mini',
+  knowledge: './docs',           // folder
+  // knowledge: './faqs.pdf',   // single file
+  // knowledge: ['./docs', './policies/*.md'], // multiple globs
+});
+
+// Or add documents at runtime (hot reload, no restart)
+await agent.addKnowledge('./new-policy-2024.pdf');
+```
+
+Supported formats: **PDF, Markdown, TXT, DOCX, HTML, JSON**
+
+### Channels
+
+One agent, multiple platforms.
+
+```ts
+agent
+  .connectChannel('web', { port: 3000, cors: true })
+  .connectChannel('telegram', { token: process.env.TG_TOKEN })
+  .connectChannel('whatsapp', {
+    token: process.env.WA_TOKEN,
+    phoneId: process.env.WA_PHONE_ID,
+    verifyToken: process.env.WA_VERIFY_TOKEN,
+  });
+
+await agent.start();
+```
+
+### Events
+
+Hook into the agent lifecycle.
+
+```ts
+agent.on('message:received', ({ message, sessionId }) => { /* log it */ });
+agent.on('tool:call',        ({ tools }) => { /* monitor usage */ });
+agent.on('tool:result',      ({ name, result }) => { /* cache results */ });
+agent.on('message:sent',     ({ response }) => { /* analytics */ });
+agent.on('channel:ready',    ({ channel }) => { /* notify */ });
+```
+
+---
+
+## Examples
+
+### Basic agent
+
+```ts
+import { SvaraApp, SvaraAgent } from '@yesvara/svara';
+
+const app = new SvaraApp({ cors: true });
+const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o-mini' });
+
+app.route('/chat', agent.handler());
+app.listen(3000);
+```
+
+### Agent with tools
+
+```ts
+import { SvaraAgent, createTool } from '@yesvara/svara';
+
+const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o' });
+
+agent.addTool(createTool({
+  name: 'get_time',
+  description: 'Get the current date and time',
+  parameters: {},
+  async run() {
+    return { time: new Date().toISOString() };
+  },
+}));
+
+const reply = await agent.chat('What time is it?');
+console.log(reply); // "It's currently 14:32 UTC..."
+```
+
+### RAG-powered support bot
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Support Bot',
+  model: 'gpt-4o-mini',
+  knowledge: './docs',
+  systemPrompt: 'You are a customer support agent. Answer using the documentation.',
+  memory: { window: 20 },
+});
+
+await agent.start(); // indexes documents
+```
+
+### Multi-channel (Web + Telegram + WhatsApp)
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Aria',
+  model: 'gpt-4o-mini',
+  knowledge: './policies',
+});
+
+agent
+  .connectChannel('web',      { port: 3000 })
+  .connectChannel('telegram', { token: process.env.TG_TOKEN })
+  .connectChannel('whatsapp', {
+    token:       process.env.WA_TOKEN,
+    phoneId:     process.env.WA_PHONE_ID,
+    verifyToken: process.env.WA_VERIFY_TOKEN,
+  });
+
+await agent.start();
+```
+
+### Drop into an existing Express app
+
+```ts
+import express from 'express';
+import { SvaraAgent } from '@yesvara/svara';
+
+const app = express();
+app.use(express.json());
+
+const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o-mini' });
+
+app.post('/api/chat', agent.handler()); // ← one line
+app.listen(3000);
+```
+
+---
+
+## CLI
+
+```bash
+# Scaffold a new project
+svara new my-app
+
+# Start dev server with hot-reload
+svara dev
+
+# Build for production
+svara build
+```
+
+```
+$ svara new my-app
+✨ Creating SvaraJS project: my-app
+
+  ✓ package.json
+  ✓ tsconfig.json
+  ✓ .env.example
+  ✓ src/index.ts
+  ✓ docs/README.md
+
+📦 Installing dependencies...
+
+✅ Project ready!
+
+  cd my-app
+  cp .env.example .env
+  npm run dev
+```
+
+---
+
+## Built-in Database
+
+Zero-config SQLite for when you need persistent state.
+
+```ts
+import { SvaraDB } from '@yesvara/svara';
+
+const db = new SvaraDB('./data/agent.db');
+
+// Simple queries
+const users = db.query<User>('SELECT * FROM users WHERE active = ?', [1]);
+
+// Key-value store
+db.kv.set('feature:rag', true);
+const enabled = db.kv.get<boolean>('feature:rag');
+
+// Transactions
+db.transaction(() => {
+  db.run('INSERT INTO orders ...', [...]);
+  db.run('UPDATE inventory ...', [...]);
+});
+```
+
+---
+
+## Architecture
+
+```
+@yesvara/svara/
+├── src/
+│   ├── core/
+│   │   ├── agent.ts        # SvaraAgent — the main class
+│   │   ├── llm.ts          # LLM abstraction + provider auto-detection
+│   │   └── types.ts        # Internal types
+│   ├── app/
+│   │   └── index.ts        # SvaraApp — HTTP framework wrapper
+│   ├── channels/
+│   │   ├── web.ts          # REST API + SSE streaming
+│   │   ├── telegram.ts     # Telegram Bot API (polling + webhook)
+│   │   └── whatsapp.ts     # Meta WhatsApp Cloud API
+│   ├── rag/
+│   │   ├── loader.ts       # Document loading (PDF, MD, DOCX, ...)
+│   │   ├── chunker.ts      # Chunking strategies (sentence, paragraph, fixed)
+│   │   └── retriever.ts    # Vector similarity search
+│   ├── memory/
+│   │   ├── conversation.ts # Per-session history with auto-trim
+│   │   └── context.ts      # LLM message builder + RAG injection
+│   ├── tools/
+│   │   ├── index.ts        # createTool() helper
+│   │   ├── registry.ts     # Tool store
+│   │   └── executor.ts     # Concurrent execution with timeout protection
+│   ├── database/
+│   │   ├── sqlite.ts       # SvaraDB wrapper (query, kv, transaction)
+│   │   └── schema.ts       # Internal SQLite schema
+│   ├── cli/                # svara new / dev / build
+│   ├── types.ts            # Public types (exported to users)
+│   └── index.ts            # Public API surface
+└── examples/
+    ├── 01-basic/           # 10-line agent
+    ├── 02-with-tools/      # createTool + events
+    ├── 03-rag-knowledge/   # Document Q&A
+    └── 04-multi-channel/   # Web + Telegram + WhatsApp
+```
+
+---
+
+## Web API Reference
+
+When using `app.route('/chat', agent.handler())`:
+
+**`POST /chat`**
+
+Request:
+```json
+{
+  "message": "What is the refund policy?",
+  "sessionId": "user-123",
+  "userId": "alice@example.com"
+}
+```
+
+Response:
+```json
+{
+  "response": "Our refund policy allows returns within 30 days...",
+  "sessionId": "user-123",
+  "usage": {
+    "promptTokens": 312,
+    "completionTokens": 89,
+    "totalTokens": 401
+  },
+  "toolsUsed": []
+}
+```
+
+**`GET /health`** — always returns `{ "status": "ok" }`
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](./CONTRIBUTING.md) first.
+
+```bash
+git clone https://github.com/yesvara/svara
+cd svara
+npm install
+npm run dev
+```
+
+---
+
+## License
+
+MIT © [Yesvara](https://github.com/yesvara)
+
+---
+
+<div align="center">
+
+Built with ❤️ for developers who want to ship AI, not fight infrastructure.
+
+**[Documentation](https://svarajs.dev)** · **[Examples](./examples)** · **[npm](https://npmjs.com/package/@yesvara/svara)**
+
+</div>
