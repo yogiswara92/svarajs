@@ -1,7 +1,7 @@
 <div align="center">
 <img src="SvaraJS.png" alt="SvaraJS" width="400">
 
-# @yesvara/svara
+<!-- # @yesvara/svara -->
 
 **Build AI agents in 15 lines. Ship to production.**
 
