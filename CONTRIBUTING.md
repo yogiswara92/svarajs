@@ -1,6 +1,6 @@
 # Contributing to SvaraJS
 
-Thanks for your interest in contributing! We welcome all contributions—bug reports, feature requests, documentation improvements, and pull requests.
+Thanks for your interest in contributing! We welcome all contributions such as bug reports, feature requests, documentation improvements, and pull requests.
 
 ## Code of Conduct
 

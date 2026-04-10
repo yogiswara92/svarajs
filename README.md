@@ -29,7 +29,7 @@ const app = new SvaraApp();
 const agent = new SvaraAgent({
   name: 'Support Bot',
   model: 'gpt-4o-mini',       // provider auto-detected
-  knowledge: './docs',         // PDF, MD, TXT — just point to a folder
+  knowledge: './docs',         // PDF, MD, TXT, just point to a folder
 });
 
 app.route('/chat', agent.handler());
@@ -44,7 +44,7 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 
 ## Features
 
-| | |
+|||
 |---|---|
 | **Zero-config LLM** | Pass a model name, provider is auto-detected |
 | **Instant RAG** | Point to a folder, documents are indexed automatically |
@@ -464,19 +464,14 @@ app.listen(3000);
 
 ## CLI
 
+### Create a new project
+
 ```bash
-# Scaffold a new project
 svara new my-app
-
-# Start dev server with hot-reload
-svara dev
-
-# Build for production
-svara build
 ```
 
+Output:
 ```
-$ svara new my-app
 ✨ Creating SvaraJS project: my-app
 
   ✓ package.json
@@ -493,6 +488,89 @@ $ svara new my-app
   cp .env.example .env
   npm run dev
 ```
+
+Options:
+- `--template <name>` — Use a specific template (default: `basic`)
+  - `basic` — Simple agent with HTTP endpoint
+  - `rag` — RAG-powered agent with document loader
+  - `multi-channel` — Web + Telegram + WhatsApp setup
+  - `tools` — Agent with tool calling examples
+
+### Start development server
+
+```bash
+svara dev
+```
+
+Features:
+- Hot-reload on file changes
+- Auto-restart agent on code updates
+- Debug logging enabled
+- Serves on `http://localhost:3000` (configurable)
+
+Options:
+- `--port <number>` — Custom port (default: `3000`)
+- `--watch <glob>` — Watch additional paths (default: `src/**`)
+- `--env <file>` — Load custom .env file
+
+### Build for production
+
+```bash
+svara build
+```
+
+Outputs:
+- `dist/` — Compiled JavaScript
+- `dist/index.js` — Entry point (ready for Node or Docker)
+- Source maps and type declarations included
+
+Options:
+- `--minify` — Minify output
+- `--sourcemaps` — Include source maps (default: true)
+- `--outdir <path>` — Custom output directory (default: `dist/`)
+
+### Running built projects
+
+```bash
+# After building
+node dist/index.js
+
+# Or with env file
+NODE_ENV=production OPENAI_API_KEY=sk-... node dist/index.js
+```
+
+### Database management
+
+```bash
+# Initialize database (auto-creates tables)
+svara db init
+
+# Show database schema
+svara db schema
+
+# Export users and conversation history
+svara db export --format json
+svara db export --format csv --table svara_messages
+
+# Query database directly
+svara db query "SELECT COUNT(*) FROM svara_users"
+
+# Reset database (⚠️ deletes all data)
+svara db reset
+
+# Backup database
+svara db backup --output backup-2026-01-15.db
+
+# Restore from backup
+svara db restore --input backup-2026-01-15.db
+```
+
+Options:
+- `--db <path>` — Custom database path (default: `./data/svara.db`)
+- `--format <type>` — Export format: `json`, `csv`, `sql` (default: `json`)
+- `--table <name>` — Specific table to export
+- `--output <path>` — Output file path
+- `--force` — Skip confirmation prompts (use with `reset` carefully!)
 
 ---
 
