@@ -110,6 +110,7 @@ class OllamaEmbeddings implements EmbeddingProvider {
 abstract class VectorStore {
   abstract add(chunk: DocumentChunk, embedding: number[]): Promise<void>;
   abstract search(queryEmbedding: number[], topK: number, threshold?: number): Promise<DocumentChunk[]>;
+  abstract searchWithScores(queryEmbedding: number[], topK: number, threshold?: number): Promise<Array<{ chunk: DocumentChunk; score: number }>>;
   abstract size(): Promise<number>;
   protected contentHash(content: string): string {
     return crypto.createHash('md5').update(content).digest('hex');
@@ -192,6 +193,44 @@ class PersistentVectorStore extends VectorStore {
       .slice(0, topK);
 
     return scored.map((s) => s.chunk);
+  }
+
+  async searchWithScores(queryEmbedding: number[], topK: number, threshold = 0): Promise<Array<{ chunk: DocumentChunk; score: number }>> {
+    // Retrieve chunks for this agent only
+    const rows = this.db.query(
+      'SELECT id, document_id, content, chunk_index, embedding, source, metadata FROM svara_chunks WHERE agent_name = ? ORDER BY id DESC',
+      [this.agentName]
+    ) as Array<{
+      id: string;
+      document_id: string;
+      content: string;
+      chunk_index: number;
+      embedding: string;
+      source: string;
+      metadata: string;
+    }>;
+
+    // Score and sort in-memory (SQLite doesn't have vector similarity)
+    const scored = rows
+      .map((row) => {
+        const embedding = JSON.parse(row.embedding) as number[];
+        return {
+          chunk: {
+            id: row.id,
+            documentId: row.document_id,
+            content: row.content,
+            index: row.chunk_index,
+            source: row.source,
+            metadata: JSON.parse(row.metadata),
+          } as DocumentChunk,
+          score: cosineSimilarity(queryEmbedding, embedding),
+        };
+      })
+      .filter((s) => s.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+
+    return scored;
   }
 
   async size(): Promise<number> {
@@ -290,12 +329,14 @@ export class VectorRetriever implements RAGRetriever {
   async retrieveChunks(query: string, topK = 5): Promise<RetrievedContext> {
     const queryEmbedding = await this.embedder.embedOne(query);
     const threshold = this.config.retrieval?.threshold ?? 0.3;
-    const chunks = await this.store.search(queryEmbedding, topK, threshold);
+
+    // Get chunks with scores from the store
+    const chunksWithScores = await this.store.searchWithScores(queryEmbedding, topK, threshold);
 
     return {
-      chunks,
+      chunks: chunksWithScores,
       query,
-      totalFound: chunks.length,
+      totalFound: chunksWithScores.length,
     };
   }
 }

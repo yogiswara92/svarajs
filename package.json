@@ -23,8 +23,17 @@
     }
   },
   "keywords": [
-    "ai", "agent", "llm", "openai", "anthropic", "rag",
-    "chatbot", "whatsapp", "telegram", "framework", "agentic"
+    "ai",
+    "agent",
+    "llm",
+    "openai",
+    "anthropic",
+    "rag",
+    "chatbot",
+    "whatsapp",
+    "telegram",
+    "framework",
+    "agentic"
   ],
   "author": "Yesvara Contributors",
   "license": "MIT",
@@ -37,23 +46,23 @@
     "access": "public"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "better-sqlite3": "^9.4.3",
-    "openai": "^4.47.1",
-    "@anthropic-ai/sdk": "^0.24.3",
-    "zod": "^3.23.8",
+    "@anthropic-ai/sdk": ">=0.20.0",
+    "better-sqlite3": "^9.6.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
+    "express": "^4.18.2",
     "glob": "^10.4.1",
-    "pdf-parse": "^1.1.1",
+    "inquirer": "^9.3.2",
     "mammoth": "^1.7.2",
+    "openai": "^6.34.0",
     "ora": "^8.0.1",
-    "inquirer": "^9.3.2"
+    "pdf-parse": "^1.1.1",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@types/express": "^4.17.21",
     "@types/better-sqlite3": "^7.6.10",
+    "@types/express": "^4.17.21",
     "@types/node": "^20.14.2",
     "@types/pdf-parse": "^1.1.4",
     "tsup": "^8.1.0",
@@ -61,12 +70,15 @@
     "vitest": "^1.6.0"
   },
   "peerDependencies": {
-    "openai": ">=4.0.0",
     "@anthropic-ai/sdk": ">=0.20.0"
   },
   "peerDependenciesMeta": {
-    "openai": { "optional": true },
-    "@anthropic-ai/sdk": { "optional": true }
+    "openai": {
+      "optional": true
+    },
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=18.0.0"

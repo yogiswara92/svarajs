@@ -4,8 +4,8 @@
 
 **Build AI agents in 15 lines. Ship to production.**
 
-A batteries-included Node.js framework for building agentic AI backends —  
-multi-channel, RAG-ready, and designed for developers who value simplicity.
+A batteries-included Node.js framework for building agentic AI backends.  
+Multi-channel, RAG-ready, and designed for developers who value simplicity.
 
 [![npm version](https://img.shields.io/npm/v/@yesvara/svara?color=0ea5e9&label=npm)](https://www.npmjs.com/package/@yesvara/svara)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
@@ -37,7 +37,7 @@ app.listen(3000);
 ```
 
 That's it. No pipeline setup. No embedding boilerplate. No webhook configuration.  
-**Convention over configuration — like Express, but for AI.**
+**Convention over configuration (like Express, but for AI).**
 
 ---
 
@@ -45,7 +45,7 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 
 | | |
 |---|---|
-| **Zero-config LLM** | Pass a model name — provider is auto-detected |
+| **Zero-config LLM** | Pass a model name, provider is auto-detected |
 | **Instant RAG** | Point to a folder, documents are indexed automatically |
 | **Multi-channel** | WhatsApp, Telegram, and Web from one agent |
 | **Tool calling** | Declarative tools with full TypeScript types |
@@ -152,13 +152,13 @@ The central class. Configure once, use everywhere.
 ```ts
 const agent = new SvaraAgent({
   name: 'Support Bot',         // Display name (used in logs & system prompt)
-  model: 'gpt-4o-mini',        // LLM model — provider auto-detected
-  systemPrompt: 'You are...', // Optional — sensible default based on name
-  knowledge: './docs',         // Optional — folder/glob for RAG
-  memory: { window: 20 },      // Optional — conversation history window
-  tools: [myTool],             // Optional — functions the agent can call
-  temperature: 0.7,            // Optional — creativity (0–2)
-  verbose: true,               // Optional — detailed logs
+  model: 'gpt-4o-mini',        // LLM model - provider auto-detected
+  systemPrompt: 'You are...', // Optional - sensible default based on name
+  knowledge: './docs',         // Optional - folder/glob for RAG
+  memory: { window: 20 },      // Optional - conversation history window
+  tools: [myTool],             // Optional - functions the agent can call
+  temperature: 0.7,            // Optional - creativity (0–2)
+  verbose: true,               // Optional - detailed logs
 });
 ```
 

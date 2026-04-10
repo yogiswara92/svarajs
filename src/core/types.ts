@@ -89,6 +89,12 @@ export interface AgentRunOptions {
   metadata?: Record<string, unknown>;
 }
 
+export interface RetrievedDocument {
+  source: string;
+  score: number;
+  excerpt: string;
+}
+
 export interface AgentRunResult {
   response: string;
   sessionId: string;
@@ -96,6 +102,7 @@ export interface AgentRunResult {
   iterations: number;
   usage: TokenUsage;
   duration: number;
+  retrievedDocuments?: RetrievedDocument[];
 }
 
 // ─── Memory Internals ────────────────────────────────────────────────────────
@@ -156,8 +163,13 @@ export interface RAGConfig {
   };
 }
 
+export interface ChunkWithScore {
+  chunk: DocumentChunk;
+  score: number;
+}
+
 export interface RetrievedContext {
-  chunks: DocumentChunk[];
+  chunks: ChunkWithScore[];
   query: string;
   totalFound: number;
 }

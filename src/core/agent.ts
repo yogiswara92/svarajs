@@ -170,6 +170,7 @@ export class SvaraAgent extends EventEmitter {
 
   private channels: Map<ChannelName, SvaraChannel> = new Map();
   private knowledgeBase: KnowledgeBase | null = null;
+  private retriever: any = null; // Store VectorRetriever for retrieveChunks access
   private knowledgePaths: string[] = [];
   private isStarted = false;
   private db: SvaraDB;
@@ -327,6 +328,7 @@ export class SvaraAgent extends EventEmitter {
           sessionId: result.sessionId,
           usage: result.usage,
           toolsUsed: result.toolsUsed,
+          retrievedDocuments: result.retrievedDocuments || [],
         });
       } catch (err) {
         const error = err as Error;
@@ -474,6 +476,7 @@ export class SvaraAgent extends EventEmitter {
   }
 
   private async run(message: string, options: AgentRunOptions): Promise<AgentRunResult> {
+    console.log(`\n[RUN START] kb=${!!this.knowledgeBase} ret=${!!this.retriever}`);
     const startTime = Date.now();
     const sessionId = options.sessionId ?? crypto.randomUUID();
     const userId = options.userId ?? 'unknown';
@@ -488,8 +491,25 @@ export class SvaraAgent extends EventEmitter {
 
     // RAG retrieval
     let ragContext = '';
-    if (this.knowledgeBase) {
+    let retrievedDocuments: Array<{ source: string; score: number; excerpt: string }> = [];
+    if (this.knowledgeBase && this.retriever) {
       ragContext = await this.knowledgeBase.retrieve(message);
+      // Also retrieve chunks to get document metadata and scores
+      try {
+        console.log(`[DEBUG] Calling retrieveChunks for query: "${message}"`);
+        const context = await this.retriever.retrieveChunks(message, 3);
+        console.log(`[DEBUG] Retrieved ${context.chunks.length} chunks`);
+        retrievedDocuments = context.chunks.map((item: any) => ({
+          source: item.chunk?.source || 'unknown',
+          score: Math.round(item.score * 100) / 100,
+          excerpt: item.chunk?.content?.substring(0, 150) || '',
+        }));
+        console.log(`[DEBUG] Mapped ${retrievedDocuments.length} documents`);
+      } catch (e) {
+        console.error(`[ERROR] RAG retrieval failed:`, e);
+      }
+    } else {
+      console.log(`[DEBUG] No knowledgeBase (${!!this.knowledgeBase}) or retriever (${!!this.retriever})`);
     }
 
     const messages = this.context.buildMessages(
@@ -580,6 +600,7 @@ export class SvaraAgent extends EventEmitter {
       iterations,
       usage: totalUsage,
       duration: Date.now() - startTime,
+      retrievedDocuments: retrievedDocuments.length > 0 ? retrievedDocuments : undefined,
     };
 
     this.emit('message:sent', { response: finalResponse, sessionId });
@@ -594,8 +615,8 @@ export class SvaraAgent extends EventEmitter {
       const { VectorRetriever } = await import('../rag/retriever.js');
 
       // Create retriever with agent name for isolated RAG per agent
-      const retriever = new VectorRetriever(this.name, this.db);
-      await retriever.init({ embeddings: { provider: 'openai' } });
+      this.retriever = new VectorRetriever(this.name, this.db);
+      await this.retriever.init({ embeddings: { provider: 'openai' } });
 
       const files: string[] = [];
       for (const pattern of paths) {
@@ -608,16 +629,16 @@ export class SvaraAgent extends EventEmitter {
         return;
       }
 
-      await retriever.addDocuments(files);
+      await this.retriever.addDocuments(files);
       this.knowledgeBase = {
         load: async (p) => {
           const newFiles: string[] = [];
           for (const pattern of (Array.isArray(p) ? p : [p])) {
             newFiles.push(...await glob(pattern));
           }
-          await retriever.addDocuments(newFiles);
+          await this.retriever.addDocuments(newFiles);
         },
-        retrieve: (query, topK) => retriever.retrieve(query, topK),
+        retrieve: (query, topK) => this.retriever.retrieve(query, topK),
       };
 
       this.log('info', `Knowledge base loaded: ${files.length} file(s).`);
