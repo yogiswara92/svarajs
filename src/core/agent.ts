@@ -173,6 +173,7 @@ export class SvaraAgent extends EventEmitter {
   private retriever: any = null; // Store VectorRetriever for retrieveChunks access
   private knowledgePaths: string[] = [];
   private isStarted = false;
+  private isKnowledgeInitialized = false;
   private db: SvaraDB;
 
   constructor(config: AgentConfig) {
@@ -303,6 +304,17 @@ export class SvaraAgent extends EventEmitter {
    */
   handler(): RequestHandler {
     return async (req, res) => {
+      // Auto-initialize knowledge on first request (lazy loading)
+      if (this.knowledgePaths.length > 0 && !this.isKnowledgeInitialized) {
+        try {
+          await this.initKnowledge(this.knowledgePaths);
+          this.isKnowledgeInitialized = true;
+        } catch (err) {
+          const error = err as Error;
+          this.log('error', `Failed to initialize knowledge: ${error.message}`);
+        }
+      }
+
       const { message, sessionId, userId } = req.body as {
         message?: string;
         sessionId?: string;

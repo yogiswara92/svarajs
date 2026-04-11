@@ -31,11 +31,9 @@ Always be friendly and professional.`,
   memory: { window: 20 },
 });
 
-// You can also add knowledge dynamically (hot reload, no restart needed)
-// await agent.addKnowledge('./new-policy-2024.pdf');
-
 const app = new SvaraApp({ cors: true });
 app.route('/chat', agent.handler());
 
-await agent.start(); // indexes documents
 app.listen(3000);
+console.log('✓ Agent running on http://localhost:3000');
+console.log('  Knowledge base auto-loads on first request');
