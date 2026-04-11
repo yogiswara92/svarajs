@@ -22,18 +22,16 @@ Multi-channel, RAG-ready, and designed for developers who value simplicity.
 Most AI frameworks make you think about infrastructure. SvaraJS makes you think about your agent.
 
 ```ts
-import { SvaraApp, SvaraAgent } from '@yesvara/svara';
-
-const app = new SvaraApp();
+import { SvaraApp, SvaraAgent, createTool } from '@yesvara/svara';
 
 const agent = new SvaraAgent({
   name: 'Support Bot',
   model: 'gpt-4o-mini',       // provider auto-detected
   knowledge: './docs',         // PDF, MD, TXT, just point to a folder
+  tools: [tool_1, tool_2, tool_3], //choose the right tool for answer
 });
 
-app.route('/chat', agent.handler());
-app.listen(3000);
+const app = new SvaraApp().route('/chat', agent.handler()).listen(3000);
 // Done. Your agent handles 1000 conversations.
 ```
 
