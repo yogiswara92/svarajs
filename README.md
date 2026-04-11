@@ -3,7 +3,7 @@
 
 <!-- # @yesvara/svara -->
 
-**Build AI agents in 15 lines. Ship to production.**
+**Build AI agents in less than 9 lines. Ship to production.**
 
 A batteries-included Node.js framework for building agentic AI backends.  
 Multi-channel, RAG-ready, and designed for developers who value simplicity.
