@@ -359,7 +359,7 @@ agent
     verifyToken: process.env.WA_VERIFY_TOKEN,
   });
 
-await agent.start();
+await agent.start(); // Start all channels
 ```
 
 ### Events
@@ -416,12 +416,15 @@ console.log(reply); // "It's currently 14:32 UTC..."
 const agent = new SvaraAgent({
   name: 'Support Bot',
   model: 'gpt-4o-mini',
-  knowledge: './docs',
+  knowledge: './docs',  // Auto-loaded on first request
   systemPrompt: 'You are a customer support agent. Answer using the documentation.',
   memory: { window: 20 },
 });
 
-await agent.start(); // indexes documents
+const app = new SvaraApp({ cors: true });
+app.route('/chat', agent.handler());
+app.listen(3000);
+// Knowledge indexes automatically on first request
 ```
 
 ### Multi-channel (Web + Telegram + WhatsApp)
@@ -458,6 +461,95 @@ const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o-mini' });
 
 app.post('/api/chat', agent.handler()); // ← one line
 app.listen(3000);
+```
+
+---
+
+## Adding Knowledge & Tools at Runtime
+
+### Adding knowledge (dynamic indexing)
+
+After the agent is created, add more documents **without restarting**:
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Support Bot',
+  model: 'gpt-4o-mini',
+  knowledge: './docs',  // Initial knowledge
+});
+
+// ── Later (no restart needed) ──────────────────────
+// Add a single document
+await agent.addKnowledge('./policies/new-policy-2024.pdf');
+
+// Add multiple documents
+await agent.addKnowledge(['./faq.md', './terms.txt', './pricing.pdf']);
+
+// Agent immediately has the new knowledge
+```
+
+**Real-world example** — admin endpoint to upload documents:
+
+```ts
+const app = new SvaraApp({ cors: true });
+app.route('/chat', agent.handler());
+
+// Admin: dynamically add knowledge
+app.post('/admin/add-knowledge', async (req, res) => {
+  const { path } = req.body;
+  try {
+    await agent.addKnowledge(path);
+    res.json({ status: 'Knowledge added', path });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.listen(3000);
+```
+
+### Adding tools (dynamic function calling)
+
+Add tools at runtime with `addTool()`:
+
+```ts
+import { SvaraAgent, createTool } from '@yesvara/svara';
+
+const agent = new SvaraAgent({
+  name: 'Assistant',
+  model: 'gpt-4o-mini',
+  tools: [initialTool],  // Start with one tool
+});
+
+// ── Later ────────────────────────────────────────
+// Add more tools dynamically
+const newTool = createTool({
+  name: 'send_email',
+  description: 'Send an email to a user',
+  parameters: {
+    to: { type: 'string', description: 'Email address', required: true },
+    subject: { type: 'string', description: 'Email subject', required: true },
+    body: { type: 'string', description: 'Email body', required: true },
+  },
+  async run({ to, subject, body }) {
+    // Call your email service
+    return { status: 'sent', to, subject };
+  },
+});
+
+agent.addTool(newTool);
+
+// Agent can now use send_email tool
+```
+
+**Chainable tool registration** (multiple tools):
+
+```ts
+agent
+  .addTool(emailTool)
+  .addTool(databaseTool)
+  .addTool(slackTool)
+  .addTool(webhookTool);
 ```
 
 ---
