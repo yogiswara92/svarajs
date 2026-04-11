@@ -18,6 +18,8 @@ import type { RAGConfig, DocumentChunk, RetrievedContext } from '../core/types.j
 import type { RAGRetriever } from '../core/agent.js';
 import { DocumentLoader } from './loader.js';
 import { Chunker } from './chunker.js';
+import { SvaraDB } from '../database/sqlite.js';
+import crypto from 'crypto';
 
 // ─── Embedding Interface ──────────────────────────────────────────────────────
 
@@ -103,41 +105,142 @@ class OllamaEmbeddings implements EmbeddingProvider {
   }
 }
 
-// ─── In-Memory Vector Store ───────────────────────────────────────────────────
+// ─── Vector Store (Persistent with SQLite) ────────────────────────────────────
 
-interface VectorEntry {
-  chunk: DocumentChunk;
-  embedding: number[];
+abstract class VectorStore {
+  abstract add(chunk: DocumentChunk, embedding: number[]): Promise<void>;
+  abstract search(queryEmbedding: number[], topK: number, threshold?: number): Promise<DocumentChunk[]>;
+  abstract searchWithScores(queryEmbedding: number[], topK: number, threshold?: number): Promise<Array<{ chunk: DocumentChunk; score: number }>>;
+  abstract size(): Promise<number>;
+  protected contentHash(content: string): string {
+    return crypto.createHash('md5').update(content).digest('hex');
+  }
 }
 
-class InMemoryVectorStore {
-  private entries: VectorEntry[] = [];
-
-  add(chunk: DocumentChunk, embedding: number[]): void {
-    // Replace if same chunk id
-    const existing = this.entries.findIndex((e) => e.chunk.id === chunk.id);
-    if (existing >= 0) {
-      this.entries[existing] = { chunk, embedding };
-    } else {
-      this.entries.push({ chunk, embedding });
-    }
+class PersistentVectorStore extends VectorStore {
+  constructor(private db: SvaraDB, private agentName: string) {
+    super();
   }
 
-  search(queryEmbedding: number[], topK: number, threshold = 0): DocumentChunk[] {
-    const scored = this.entries.map((entry) => ({
-      chunk: entry.chunk,
-      score: cosineSimilarity(queryEmbedding, entry.embedding),
-    }));
+  async add(chunk: DocumentChunk, embedding: number[]): Promise<void> {
+    const contentHash = this.contentHash(chunk.content);
 
-    return scored
+    // Check if content already exists for this agent (deduplication per agent)
+    const existing = this.db.query(
+      'SELECT id FROM svara_chunks WHERE agent_name = ? AND content_hash = ?',
+      [this.agentName, contentHash]
+    ) as Array<{ id: string }>;
+
+    if (existing.length > 0) {
+      console.log(`[SvaraJS:RAG] Duplicate content detected for ${this.agentName}, skipping chunk ${chunk.id}`);
+      return;
+    }
+
+    // Store embedding as JSON string
+    const embeddingJson = JSON.stringify(embedding);
+
+    this.db.run(
+      `INSERT OR REPLACE INTO svara_chunks
+       (id, agent_name, document_id, content, content_hash, chunk_index, embedding, source, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        chunk.id,
+        this.agentName,
+        chunk.documentId,
+        chunk.content,
+        contentHash,
+        chunk.index,
+        embeddingJson,
+        chunk.source,
+        JSON.stringify(chunk.metadata),
+      ]
+    );
+  }
+
+  async search(queryEmbedding: number[], topK: number, threshold = 0): Promise<DocumentChunk[]> {
+    // Retrieve chunks for this agent only
+    const rows = this.db.query(
+      'SELECT id, document_id, content, chunk_index, embedding, source, metadata FROM svara_chunks WHERE agent_name = ? ORDER BY id DESC',
+      [this.agentName]
+    ) as Array<{
+      id: string;
+      document_id: string;
+      content: string;
+      chunk_index: number;
+      embedding: string;
+      source: string;
+      metadata: string;
+    }>;
+
+    // Score and sort in-memory (SQLite doesn't have vector similarity)
+    const scored = rows
+      .map((row) => {
+        const embedding = JSON.parse(row.embedding) as number[];
+        return {
+          chunk: {
+            id: row.id,
+            documentId: row.document_id,
+            content: row.content,
+            index: row.chunk_index,
+            source: row.source,
+            metadata: JSON.parse(row.metadata),
+          } as DocumentChunk,
+          score: cosineSimilarity(queryEmbedding, embedding),
+        };
+      })
       .filter((s) => s.score >= threshold)
       .sort((a, b) => b.score - a.score)
-      .slice(0, topK)
-      .map((s) => s.chunk);
+      .slice(0, topK);
+
+    return scored.map((s) => s.chunk);
   }
 
-  get size(): number {
-    return this.entries.length;
+  async searchWithScores(queryEmbedding: number[], topK: number, threshold = 0): Promise<Array<{ chunk: DocumentChunk; score: number }>> {
+    // Retrieve chunks for this agent only
+    const rows = this.db.query(
+      'SELECT id, document_id, content, chunk_index, embedding, source, metadata FROM svara_chunks WHERE agent_name = ? ORDER BY id DESC',
+      [this.agentName]
+    ) as Array<{
+      id: string;
+      document_id: string;
+      content: string;
+      chunk_index: number;
+      embedding: string;
+      source: string;
+      metadata: string;
+    }>;
+
+    // Score and sort in-memory (SQLite doesn't have vector similarity)
+    const scored = rows
+      .map((row) => {
+        const embedding = JSON.parse(row.embedding) as number[];
+        return {
+          chunk: {
+            id: row.id,
+            documentId: row.document_id,
+            content: row.content,
+            index: row.chunk_index,
+            source: row.source,
+            metadata: JSON.parse(row.metadata),
+          } as DocumentChunk,
+          score: cosineSimilarity(queryEmbedding, embedding),
+        };
+      })
+      .filter((s) => s.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+
+    return scored;
+  }
+
+  async size(): Promise<number> {
+    const result = this.db.query(
+      'SELECT COUNT(*) as count FROM svara_chunks WHERE agent_name = ?',
+      [this.agentName]
+    ) as Array<{
+      count: number;
+    }>;
+    return result[0]?.count ?? 0;
   }
 }
 
@@ -145,19 +248,25 @@ class InMemoryVectorStore {
 
 export class VectorRetriever implements RAGRetriever {
   private embedder!: EmbeddingProvider;
-  private store: InMemoryVectorStore;
+  private store!: VectorStore;
   private loader: DocumentLoader;
   private chunker: Chunker;
   private config!: RAGConfig;
+  private db: SvaraDB;
+  private agentName: string;
 
-  constructor() {
-    this.store = new InMemoryVectorStore();
+  constructor(agentName: string, db?: SvaraDB) {
+    this.agentName = agentName;
     this.loader = new DocumentLoader();
     this.chunker = new Chunker();
+    this.db = db || new SvaraDB('./data/svara.db');
   }
 
   async init(config: RAGConfig): Promise<void> {
     this.config = config;
+
+    // Init vector store (persistent per agent)
+    this.store = new PersistentVectorStore(this.db, this.agentName);
 
     // Init chunker with config
     if (config.chunking) {
@@ -193,19 +302,21 @@ export class VectorRetriever implements RAGRetriever {
     const embeddings = await this.embedder.embed(chunks.map((c) => c.content));
 
     for (let i = 0; i < chunks.length; i++) {
-      this.store.add(chunks[i], embeddings[i]);
+      await this.store.add(chunks[i], embeddings[i]);
     }
 
-    console.log(`[SvaraJS:RAG] Vector store now has ${this.store.size} chunk(s).`);
+    const size = await this.store.size();
+    console.log(`[SvaraJS:RAG] Vector store now has ${size} chunk(s).`);
   }
 
   async retrieve(query: string, topK = 5): Promise<string> {
-    if (this.store.size === 0) return '';
+    const size = await this.store.size();
+    if (size === 0) return '';
 
     const queryEmbedding = await this.embedder.embedOne(query);
     const threshold = this.config.retrieval?.threshold ?? 0.3;
 
-    const chunks = this.store.search(queryEmbedding, topK, threshold);
+    const chunks = await this.store.search(queryEmbedding, topK, threshold);
 
     if (!chunks.length) return '';
 
@@ -218,12 +329,14 @@ export class VectorRetriever implements RAGRetriever {
   async retrieveChunks(query: string, topK = 5): Promise<RetrievedContext> {
     const queryEmbedding = await this.embedder.embedOne(query);
     const threshold = this.config.retrieval?.threshold ?? 0.3;
-    const chunks = this.store.search(queryEmbedding, topK, threshold);
+
+    // Get chunks with scores from the store
+    const chunksWithScores = await this.store.searchWithScores(queryEmbedding, topK, threshold);
 
     return {
-      chunks,
+      chunks: chunksWithScores,
       query,
-      totalFound: chunks.length,
+      totalFound: chunksWithScores.length,
     };
   }
 }

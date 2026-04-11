@@ -53,6 +53,7 @@ import type {
 import { ConversationMemory } from '../memory/conversation.js';
 import { ContextBuilder } from '../memory/context.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { SvaraDB } from '../database/sqlite.js';
 import { ToolExecutor } from '../tools/executor.js';
 import type { Tool } from '../types.js';
 
@@ -169,8 +170,10 @@ export class SvaraAgent extends EventEmitter {
 
   private channels: Map<ChannelName, SvaraChannel> = new Map();
   private knowledgeBase: KnowledgeBase | null = null;
+  private retriever: any = null; // Store VectorRetriever for retrieveChunks access
   private knowledgePaths: string[] = [];
   private isStarted = false;
+  private db: SvaraDB;
 
   constructor(config: AgentConfig) {
     super();
@@ -178,6 +181,7 @@ export class SvaraAgent extends EventEmitter {
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
     this.verbose = config.verbose ?? false;
+    this.db = new SvaraDB('./data/svara.db');
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
@@ -324,6 +328,7 @@ export class SvaraAgent extends EventEmitter {
           sessionId: result.sessionId,
           usage: result.usage,
           toolsUsed: result.toolsUsed,
+          retrievedDocuments: result.retrievedDocuments || [],
         });
       } catch (err) {
         const error = err as Error;
@@ -405,6 +410,58 @@ export class SvaraAgent extends EventEmitter {
     }
   }
 
+  // ─── Internal: User & Session Tracking ───────────────────────────────────────
+
+  private async trackUserAndSession(userId: string, sessionId: string, channel = 'api'): Promise<void> {
+    try {
+      // Track user
+      const existingUser = this.db.query(
+        'SELECT id FROM svara_users WHERE id = ?',
+        [userId]
+      ) as Array<{ id: string }>;
+
+      if (existingUser.length === 0) {
+        // New user
+        this.db.run(
+          `INSERT INTO svara_users (id, display_name, first_seen, last_seen)
+           VALUES (?, ?, unixepoch(), unixepoch())`,
+          [userId, userId]
+        );
+      } else {
+        // Update last_seen
+        this.db.run(
+          'UPDATE svara_users SET last_seen = unixepoch() WHERE id = ?',
+          [userId]
+        );
+      }
+
+      // Track session
+      const existingSession = this.db.query(
+        'SELECT id FROM svara_sessions WHERE id = ?',
+        [sessionId]
+      ) as Array<{ id: string }>;
+
+      if (existingSession.length === 0) {
+        // New session
+        this.db.run(
+          `INSERT INTO svara_sessions (id, user_id, channel, created_at, updated_at)
+           VALUES (?, ?, ?, unixepoch(), unixepoch())`,
+          [sessionId, userId, channel]
+        );
+      } else {
+        // Update updated_at
+        this.db.run(
+          'UPDATE svara_sessions SET updated_at = unixepoch() WHERE id = ?',
+          [sessionId]
+        );
+      }
+
+      this.log('debug', `Tracked user ${userId} with session ${sessionId}`);
+    } catch (error) {
+      this.log('error', `Failed to track user: ${(error as Error).message}`);
+    }
+  }
+
   // ─── Internal: Agentic Loop ───────────────────────────────────────────────
 
   /**
@@ -419,18 +476,40 @@ export class SvaraAgent extends EventEmitter {
   }
 
   private async run(message: string, options: AgentRunOptions): Promise<AgentRunResult> {
+    console.log(`\n[RUN START] kb=${!!this.knowledgeBase} ret=${!!this.retriever}`);
     const startTime = Date.now();
     const sessionId = options.sessionId ?? crypto.randomUUID();
+    const userId = options.userId ?? 'unknown';
 
-    this.emit('message:received', { message, sessionId, userId: options.userId });
+    // Track user and session
+    await this.trackUserAndSession(userId, sessionId);
+
+    this.emit('message:received', { message, sessionId, userId });
 
     // Build LLM message history
     const history = await this.memory.getHistory(sessionId);
 
     // RAG retrieval
     let ragContext = '';
-    if (this.knowledgeBase) {
+    let retrievedDocuments: Array<{ source: string; score: number; excerpt: string }> = [];
+    if (this.knowledgeBase && this.retriever) {
       ragContext = await this.knowledgeBase.retrieve(message);
+      // Also retrieve chunks to get document metadata and scores
+      try {
+        console.log(`[DEBUG] Calling retrieveChunks for query: "${message}"`);
+        const context = await this.retriever.retrieveChunks(message, 3);
+        console.log(`[DEBUG] Retrieved ${context.chunks.length} chunks`);
+        retrievedDocuments = context.chunks.map((item: any) => ({
+          source: item.chunk?.source || 'unknown',
+          score: Math.round(item.score * 100) / 100,
+          excerpt: item.chunk?.content?.substring(0, 150) || '',
+        }));
+        console.log(`[DEBUG] Mapped ${retrievedDocuments.length} documents`);
+      } catch (e) {
+        console.error(`[ERROR] RAG retrieval failed:`, e);
+      }
+    } else {
+      console.log(`[DEBUG] No knowledgeBase (${!!this.knowledgeBase}) or retriever (${!!this.retriever})`);
     }
 
     const messages = this.context.buildMessages(
@@ -442,7 +521,7 @@ export class SvaraAgent extends EventEmitter {
 
     const internalCtx: InternalAgentContext = {
       sessionId,
-      userId: options.userId ?? 'unknown',
+      userId,
       agentName: this.name,
       history,
       metadata: options.metadata ?? {},
@@ -521,6 +600,7 @@ export class SvaraAgent extends EventEmitter {
       iterations,
       usage: totalUsage,
       duration: Date.now() - startTime,
+      retrievedDocuments: retrievedDocuments.length > 0 ? retrievedDocuments : undefined,
     };
 
     this.emit('message:sent', { response: finalResponse, sessionId });
@@ -534,8 +614,9 @@ export class SvaraAgent extends EventEmitter {
       const { glob } = await import('glob');
       const { VectorRetriever } = await import('../rag/retriever.js');
 
-      const retriever = new VectorRetriever();
-      await retriever.init({ embeddings: { provider: 'openai' } });
+      // Create retriever with agent name for isolated RAG per agent
+      this.retriever = new VectorRetriever(this.name, this.db);
+      await this.retriever.init({ embeddings: { provider: 'openai' } });
 
       const files: string[] = [];
       for (const pattern of paths) {
@@ -548,16 +629,16 @@ export class SvaraAgent extends EventEmitter {
         return;
       }
 
-      await retriever.addDocuments(files);
+      await this.retriever.addDocuments(files);
       this.knowledgeBase = {
         load: async (p) => {
           const newFiles: string[] = [];
           for (const pattern of (Array.isArray(p) ? p : [p])) {
             newFiles.push(...await glob(pattern));
           }
-          await retriever.addDocuments(newFiles);
+          await this.retriever.addDocuments(newFiles);
         },
-        retrieve: (query, topK) => retriever.retrieve(query, topK),
+        retrieve: (query, topK) => this.retriever.retrieve(query, topK),
       };
 
       this.log('info', `Knowledge base loaded: ${files.length} file(s).`);

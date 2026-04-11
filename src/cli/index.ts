@@ -11,11 +11,12 @@
  */
 
 import { Command } from 'commander';
-import { createRequire } from 'module';
+import path from 'path';
+import fs from 'fs';
 
-const require = createRequire(import.meta.url);
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pkg = require('../../package.json') as { version: string; description: string };
+// Load package.json (works in both CommonJS and ESM)
+const pkgPath = path.resolve(path.dirname(__filename), '../../package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as { version: string; description: string };
 
 const program = new Command();
 
@@ -67,6 +68,75 @@ program
       console.log('✅ Build complete → dist/');
     } catch {
       process.exit(1);
+    }
+  });
+
+// ── svara db:* commands ────────────────────────────────────────────────────────
+
+// svara db:list-chunks
+program
+  .command('db:list-chunks')
+  .description('List all chunks in vector store')
+  .option('--agent <name>', 'Filter by agent name')
+  .action(async (opts: { agent?: string }) => {
+    const { listChunks } = await import('./commands/db.js');
+    await listChunks(opts);
+  });
+
+// svara db:search
+program
+  .command('db:search <query>')
+  .description('Search chunks by content')
+  .option('--agent <name>', 'Filter by agent name')
+  .option('--limit <num>', 'Number of results', '5')
+  .action(async (query: string, opts: { agent?: string; limit: string }) => {
+    const { searchChunks } = await import('./commands/db.js');
+    await searchChunks(query, {
+      agent: opts.agent,
+      limit: parseInt(opts.limit, 10),
+    });
+  });
+
+// svara db:stats
+program
+  .command('db:stats')
+  .description('Show database statistics')
+  .option('--agent <name>', 'Filter by agent name')
+  .action(async (opts: { agent?: string }) => {
+    const { dbStats } = await import('./commands/db.js');
+    await dbStats(opts);
+  });
+
+// svara db:users
+program
+  .command('db:users')
+  .description('List all users in the database')
+  .action(async () => {
+    const { listUsers } = await import('./commands/db.js');
+    await listUsers();
+  });
+
+// svara db:sessions
+program
+  .command('db:sessions')
+  .description('List all sessions in the database')
+  .option('--user <email>', 'Filter by user email')
+  .action(async (opts: { user?: string }) => {
+    const { listSessions } = await import('./commands/db.js');
+    await listSessions(opts);
+  });
+
+// svara db:clear-chunks
+program
+  .command('db:clear-chunks <agent>')
+  .description('Delete all chunks for an agent (requires --yes confirmation)')
+  .option('--yes', 'Confirm deletion')
+  .action(async (agent: string, opts: { yes?: boolean }) => {
+    const { clearChunksConfirmed, clearChunks } = await import('./commands/db.js');
+    if (opts.yes) {
+      await clearChunksConfirmed(agent);
+    } else {
+      await clearChunks(agent);
     }
   });
 
