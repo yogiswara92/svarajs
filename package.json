@@ -1,6 +1,6 @@
 {
   "name": "@yesvara/svara",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "description": "Build AI agents in 15 lines of code. Multi-channel, RAG-ready, production-grade.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
