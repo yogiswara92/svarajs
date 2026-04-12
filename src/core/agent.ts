@@ -182,7 +182,7 @@ export class SvaraAgent extends EventEmitter {
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
     this.verbose = config.verbose ?? false;
-    this.db = new SvaraDB('./data/svara.db');
+    this.db = new SvaraDB(`./data/${config.name}.db`);
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
