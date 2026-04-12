@@ -28,7 +28,7 @@ const agent = new SvaraAgent({
   name: 'Support Bot',
   model: 'gpt-4o-mini',       // provider auto-detected
   knowledge: './docs',         // PDF, MD, TXT, just point to a folder
-  tools: [tool_1, tool_2, tool_3], //choose the right tool for answer
+  tools: [tool_1, tool_2, tool_3], // Agent choose the right tool for answer
 });
 
 const app = new SvaraApp().route('/chat', agent.handler()).listen(3000);
