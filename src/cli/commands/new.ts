@@ -142,7 +142,7 @@ function generateIndexFile(
   channels: string[]
 ): string {
   const modelMap: Record<string, string> = {
-    openai: 'gpt-4o',
+    openai: 'gpt-4o-mini',
     anthropic: 'claude-opus-4-6',
     ollama: 'llama3',
   };
@@ -184,10 +184,10 @@ const timeTool = createTool({
 // Create agent
 const agent = new SvaraAgent({
   name: '${name}',
-  model: '${modelMap[provider] ?? 'gpt-4o'}',
+  model: '${modelMap[provider] ?? 'gpt-4o-mini'}',
   systemPrompt: 'You are a helpful AI assistant. Be concise and friendly.',
   tools: [timeTool],
-  knowledge: './docs', // Add your documents here for RAG
+  knowledge: './docs/**/*', // Add your documents here for RAG
 });
 
 // Setup channels
