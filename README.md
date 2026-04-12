@@ -68,7 +68,7 @@ npm install @yesvara/svara
 ### 2. Create a new project
 
 ```bash
-npx @yesvara/svara new my-agent
+npx svara new my-agent
 cd my-agent
 ```
 
