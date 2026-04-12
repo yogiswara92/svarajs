@@ -86,8 +86,9 @@ function generatePackageJson(name: string): string {
       start: 'node dist/index.js',
     },
     dependencies: {
-      '@yesvara/svara': '^0.2.7',
+      '@yesvara/svara': '^0.2.8',
       'better-sqlite3': '^12.8.0',
+      chokidar: '^3.6.0',
       dotenv: '^16.4.5',
     },
     devDependencies: {
@@ -164,6 +165,7 @@ function generateIndexFile(
 
   return `import 'dotenv/config';
 import { SvaraApp, SvaraAgent, createTool } from '@yesvara/svara';
+import chokidar from 'chokidar';
 
 /**
  * ${name} — powered by SvaraJS
@@ -190,6 +192,19 @@ const agent = new SvaraAgent({
   tools: [timeTool],
   knowledge: './docs/**/*', // Add your documents here for RAG
 });
+
+// Auto-reload knowledge when files change
+if (agent.knowledgeBase) {
+  const watcher = chokidar.watch('./docs', { ignored: /^\\./ });
+  watcher.on('add', async () => {
+    console.log('📄 Document detected, reloading knowledge...');
+    await agent.knowledgeBase.load('./docs/**/*');
+  });
+  watcher.on('unlink', async () => {
+    console.log('🗑️ Document removed, reloading knowledge...');
+    await agent.knowledgeBase.load('./docs/**/*');
+  });
+}
 
 // Setup channels
 ${channelSetup}
