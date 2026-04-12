@@ -65,40 +65,31 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 ```bash
 npm install @yesvara/svara
 ```
-
-### 2. Set your API key
+### 2. Create a new project
 
 ```bash
-# .env
+npx @yesvara/svara new my-agent
+cd my-agent
+```
+
+This scaffolds a ready-to-run project with TypeScript, tools, and RAG setup.
+
+### 3. Configure API keys
+
+```bash
+nano .env
+# Edit .env and add your API keys
 OPENAI_API_KEY=sk-...
 ```
 
-### 3. Create your agent
-
-```ts
-// src/index.ts
-import 'dotenv/config';
-import { SvaraApp, SvaraAgent } from '@yesvara/svara';
-
-const app = new SvaraApp({ cors: true });
-
-const agent = new SvaraAgent({
-  name: 'Aria',
-  model: 'gpt-4o-mini',
-  systemPrompt: 'You are Aria, a helpful and friendly AI assistant.',
-});
-
-app.route('/chat', agent.handler());
-app.listen(3000);
-```
-
-### 4. Run
+### 4. Run the agent
 
 ```bash
-npx tsx src/index.ts
+npx svara dev
+# Server running at http://localhost:3000
 ```
 
-### 5. Chat
+### 5. Chat with your agent
 
 ```bash
 curl -X POST http://localhost:3000/chat \
@@ -112,13 +103,27 @@ curl -X POST http://localhost:3000/chat \
 
 ```json
 {
-  "response": "Hi! I'm Aria, your AI assistant...",
+  "response": "Hi! I'm my-agent, your AI assistant...",
   "sessionId": "user-1-session-1",
   "usage": { "totalTokens": 142 }
 }
 ```
 
-The agent automatically tracks users and sessions in the SQLite database.
+### 6. (Optional) Customize your agent
+
+Edit `src/index.ts` to customize:
+
+```ts
+const agent = new SvaraAgent({
+  name: 'My Awesome Bot',
+  model: 'gpt-4o-mini',                    // Change model
+  systemPrompt: 'Custom personality here', // Custom behavior
+  knowledge: './docs/**/*',                // Add RAG documents
+  tools: [yourTools],                      // Add tools
+});
+```
+
+Add more documents anytime — just drop files in `docs/` and restart.
 
 ---
 
