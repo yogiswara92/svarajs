@@ -86,7 +86,8 @@ function generatePackageJson(name: string): string {
       start: 'node dist/index.js',
     },
     dependencies: {
-      '@yesvara/svara': '^0.1.3',
+      '@yesvara/svara': '^0.2.7',
+      'better-sqlite3': '^12.8.0',
       dotenv: '^16.4.5',
     },
     devDependencies: {
