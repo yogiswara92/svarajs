@@ -1,6 +1,6 @@
 /**
  * @module database/sqlite
- * SvaraJS — SQLite adapter
+ * SvaraJS - SQLite adapter
  *
  * A clean, ergonomic wrapper around better-sqlite3.
  * Provides typed query helpers, migrations, and a KV store.
@@ -161,17 +161,109 @@ export class SvaraDB {
     role: string;
     content: string;
     toolCallId?: string;
+    /** Reasoning trace for this reply (tools called, iteration count, RAG sources) - shown collapsed in the dashboard chat. */
+    metadata?: Record<string, unknown>;
   }): void {
     this.db.prepare(`
-      INSERT OR REPLACE INTO svara_messages (id, session_id, role, content, tool_call_id)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT OR REPLACE INTO svara_messages (id, session_id, role, content, tool_call_id, metadata)
+      VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       params.id,
       params.sessionId,
       params.role,
       params.content,
-      params.toolCallId ?? null
+      params.toolCallId ?? null,
+      params.metadata ? JSON.stringify(params.metadata) : null
     );
+    this.db.prepare(`
+      INSERT INTO svara_messages_fts (content, session_id, message_id, role)
+      VALUES (?, ?, ?, ?)
+    `).run(params.content, params.sessionId, params.id, params.role);
+  }
+
+  /**
+   * Full-text search across every persisted session (not just the current
+   * one's in-memory window) - the DISCOVERY mode behind the `session_search`
+   * tool. Query terms are matched as an implicit AND of literal phrases, so
+   * arbitrary user input can't inject FTS5 query operators.
+   */
+  searchMessages(query: string, limit = 20): Array<{
+    sessionId: string;
+    messageId: string;
+    role: string;
+    content: string;
+  }> {
+    const terms = query.trim().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return [];
+    const ftsQuery = terms.map((t) => `"${t.replace(/"/g, '""')}"`).join(' ');
+
+    return this.db.prepare(`
+      SELECT session_id as sessionId, message_id as messageId, role, content
+      FROM svara_messages_fts
+      WHERE svara_messages_fts MATCH ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, limit) as Array<{ sessionId: string; messageId: string; role: string; content: string }>;
+  }
+
+  /** Chronological browse mode: most recently active sessions first, with a preview of the last message. */
+  listRecentSessions(limit = 20): Array<{
+    sessionId: string;
+    lastMessageAt: number;
+    messageCount: number;
+    preview: string;
+  }> {
+    return this.db.prepare(`
+      SELECT
+        session_id as sessionId,
+        MAX(created_at) as lastMessageAt,
+        COUNT(*) as messageCount,
+        (
+          SELECT content FROM svara_messages m2
+          WHERE m2.session_id = m.session_id
+          ORDER BY created_at DESC LIMIT 1
+        ) as preview
+      FROM svara_messages m
+      GROUP BY session_id
+      ORDER BY lastMessageAt DESC
+      LIMIT ?
+    `).all(limit) as Array<{ sessionId: string; lastMessageAt: number; messageCount: number; preview: string }>;
+  }
+
+  /** A window of messages around a specific one, within its session - the SCROLL mode behind `session_search`. */
+  getMessageContext(sessionId: string, aroundMessageId: string, windowSize = 5): Array<{
+    id: string;
+    role: string;
+    content: string;
+    created_at: number;
+  }> {
+    // Ordered by rowid (strict insertion order), not created_at (only 1-second
+    // resolution - two messages saved in the same second would tie, making
+    // "before"/"after" ambiguous).
+    const target = this.db.prepare(
+      'SELECT rowid FROM svara_messages WHERE id = ? AND session_id = ?'
+    ).get(aroundMessageId, sessionId) as { rowid: number } | undefined;
+    if (!target) return [];
+
+    const rows = this.db.prepare(`
+      SELECT id, role, content, created_at, rowid FROM (
+        SELECT id, role, content, created_at, rowid FROM svara_messages
+        WHERE session_id = ? AND rowid <= ?
+        ORDER BY rowid DESC LIMIT ?
+      )
+      UNION ALL
+      SELECT id, role, content, created_at, rowid FROM (
+        SELECT id, role, content, created_at, rowid FROM svara_messages
+        WHERE session_id = ? AND rowid > ?
+        ORDER BY rowid ASC LIMIT ?
+      )
+      ORDER BY rowid ASC
+    `).all(
+      sessionId, target.rowid, windowSize + 1,
+      sessionId, target.rowid, windowSize
+    ) as Array<{ id: string; role: string; content: string; created_at: number; rowid: number }>;
+
+    return rows.map(({ rowid: _rowid, ...row }) => row);
   }
 
   getMessages(sessionId: string, limit = 50): Array<{
@@ -179,10 +271,11 @@ export class SvaraDB {
     role: string;
     content: string;
     tool_call_id: string | null;
+    metadata?: Record<string, unknown>;
     created_at: number;
   }> {
-    return this.db.prepare(`
-      SELECT id, role, content, tool_call_id, created_at
+    const rows = this.db.prepare(`
+      SELECT id, role, content, tool_call_id, metadata, created_at
       FROM svara_messages
       WHERE session_id = ?
       ORDER BY created_at ASC
@@ -192,12 +285,18 @@ export class SvaraDB {
       role: string;
       content: string;
       tool_call_id: string | null;
+      metadata: string | null;
       created_at: number;
     }>;
+    return rows.map(({ metadata, ...row }) => ({
+      ...row,
+      metadata: metadata ? (JSON.parse(metadata) as Record<string, unknown>) : undefined,
+    }));
   }
 
   clearSession(sessionId: string): void {
     this.db.prepare('DELETE FROM svara_messages WHERE session_id = ?').run(sessionId);
+    this.db.prepare('DELETE FROM svara_messages_fts WHERE session_id = ?').run(sessionId);
   }
 
   // ─── Private Setup ────────────────────────────────────────────────────────
@@ -224,6 +323,14 @@ export class SvaraDB {
 
   private migrate(): void {
     this.db.exec(CREATE_TABLES_SQL);
+
+    // svara_messages predates the `metadata` column (added to persist each
+    // reply's tool-call trace) - CREATE TABLE IF NOT EXISTS above is a no-op
+    // for a database that already has the table, so add it here instead.
+    const messageColumns = this.db.prepare('PRAGMA table_info(svara_messages)').all() as Array<{ name: string }>;
+    if (!messageColumns.some((c) => c.name === 'metadata')) {
+      this.db.exec('ALTER TABLE svara_messages ADD COLUMN metadata TEXT');
+    }
 
     const meta = this.db.prepare(
       "SELECT value FROM svara_meta WHERE key = 'schema_version'"

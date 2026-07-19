@@ -1,7 +1,7 @@
 /**
  * @module channels/web
  *
- * HTTP channel — exposes the agent as a REST API with SSE streaming.
+ * HTTP channel - exposes the agent as a REST API with SSE streaming.
  *
  * Used automatically when you call:
  * ```ts
@@ -14,13 +14,13 @@
  * ```
  *
  * API:
- *   POST /chat       — { message, sessionId? } → { response, sessionId, usage }
- *   GET  /health     — { status: 'ok' }
+ *   POST /chat       - { message, sessionId? } → { response, sessionId, usage }
+ *   GET  /health     - { status: 'ok' }
  */
 
 import express, { type Express } from 'express';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
-import type { IncomingMessage, ChannelName } from '../core/types.js';
+import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';
 
 export interface WebChannelConfig {
   port?: number;           // default 3000
@@ -54,8 +54,10 @@ export class WebChannel implements SvaraChannel {
     });
   }
 
-  async send(_sessionId: string, _text: string): Promise<void> {
-    // Push-based sending is handled via SSE in the /chat/stream route
+  async send(_sessionId: string, _text: string, _attachments?: Attachment[]): Promise<void> {
+    // Push-based sending is handled via SSE in the /chat/stream route.
+    // The synchronous POST /chat path (the common case) already returns
+    // attachments as part of AgentRunResult - no separate delivery needed.
   }
 
   async stop(): Promise<void> {
@@ -68,7 +70,14 @@ export class WebChannel implements SvaraChannel {
 
   private buildApp(): Express {
     const app = express();
-    app.use(express.json({ limit: '10mb' }));
+    app.use(express.json({
+      limit: '10mb',
+      // Stash the raw bytes for channels that need to verify a webhook
+      // signature (e.g. Slack) computed over the exact request body.
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    }));
 
     if (this.config.cors) {
       const origin = this.config.cors === true ? '*' : this.config.cors;

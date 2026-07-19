@@ -6,7 +6,7 @@
  * Internal implementation types stay in core/types.ts.
  */
 
-import type { InternalAgentContext } from './core/types.js';
+import type { InternalAgentContext, Attachment } from './core/types.js';
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
@@ -41,11 +41,11 @@ export interface Tool {
 
   /**
    * The function that runs when the LLM calls this tool.
-   * Return anything — it gets serialized and sent back to the LLM.
+   * Return anything - it gets serialized and sent back to the LLM.
    */
   run(args: Record<string, unknown>, ctx: AgentContext): Promise<unknown>;
 
-  /** Group related tools together. Optional — used for organization. */
+  /** Group related tools together. Optional - used for organization. */
   category?: string;
 
   /** Timeout in milliseconds before the tool is cancelled. @default 30000 */
@@ -103,6 +103,9 @@ export interface ProcessResult {
 
   /** Total time in milliseconds. */
   duration: number;
+
+  /** Files the agent produced this turn via the `send_file` tool, if any. */
+  attachments?: Attachment[];
 }
 
 // ─── Memory Options ───────────────────────────────────────────────────────────
@@ -124,7 +127,7 @@ export type { AppOptions } from './app/index.js';
 /**
  * Supported channel names for `agent.connectChannel()`.
  */
-export type { ChannelName } from './core/types.js';
+export type { ChannelName, Attachment } from './core/types.js';
 
 // ─── Re-exports for convenience ───────────────────────────────────────────────
 

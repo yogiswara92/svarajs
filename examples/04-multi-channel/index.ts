@@ -2,7 +2,7 @@
  * @example Multi-Channel Agent
  *
  * One agent, three channels. Same conversations, everywhere.
- * Customers can reach you on WhatsApp, Telegram, or the web —
+ * Customers can reach you on WhatsApp, Telegram, or the web -
  * the agent handles all of them seamlessly.
  *
  * Setup:
@@ -52,7 +52,7 @@ Always greet customers by name if they provide it.`,
 // ── Channels ──────────────────────────────────────────────────────────────────
 
 agent
-  // Web API — for website chat widget
+  // Web API - for website chat widget
   .connectChannel('web', {
     port: 3000,
     cors: true,

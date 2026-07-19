@@ -22,10 +22,10 @@ const agent = new SvaraAgent({
 
   systemPrompt: `You are a helpful customer support agent.
 Answer questions using the provided documentation.
-If you don't know the answer, say so honestly — don't make things up.
+If you don't know the answer, say so honestly - don't make things up.
 Always be friendly and professional.`,
 
-  // Point to your docs folder — any file type, glob patterns work
+  // Point to your docs folder - any file type, glob patterns work
   knowledge: './docs/**/*',
 
   memory: { window: 20 },

@@ -2,7 +2,7 @@
  * @internal
  * LLM abstraction layer with automatic provider detection.
  *
- * Users never touch this directly — they just pass a model name:
+ * Users never touch this directly - they just pass a model name:
  *   'gpt-4o'               → OpenAI (auto)
  *   'claude-opus-4-6'     → Anthropic (auto)
  *   'llama3'               → Ollama (auto, local)
@@ -17,6 +17,7 @@ import type {
   InternalTool,
   LLMProviderName,
 } from './types.js';
+import { countTokens } from '../memory/tokenizer.js';
 
 // ─── Model → Provider Auto-Detection ─────────────────────────────────────────
 
@@ -37,7 +38,7 @@ export function detectProvider(model: string): LLMProviderName {
   if (OPENAI_PREFIXES.some((p) => m.startsWith(p))) return 'openai';
   if (ANTHROPIC_PREFIXES.some((p) => m.startsWith(p))) return 'anthropic';
 
-  // Groq uses Llama/Mixtral model names — differentiate by env key
+  // Groq uses Llama/Mixtral model names - differentiate by env key
   if (GROQ_MODELS.some((gm) => m.includes(gm)) && process.env.GROQ_API_KEY) {
     return 'groq';
   }
@@ -129,7 +130,7 @@ class OpenAIAdapter implements LLMAdapter {
   }
 
   countTokens(text: string): number {
-    return Math.ceil(text.length / 4);
+    return countTokens(text);
   }
 }
 
@@ -199,7 +200,7 @@ class AnthropicAdapter implements LLMAdapter {
   }
 
   countTokens(text: string): number {
-    return Math.ceil(text.length / 4);
+    return countTokens(text);
   }
 }
 
@@ -244,7 +245,7 @@ class OllamaAdapter implements LLMAdapter {
   }
 
   countTokens(text: string): number {
-    return Math.ceil(text.length / 4);
+    return countTokens(text);
   }
 }
 
@@ -264,7 +265,7 @@ class GroqAdapter extends OpenAIAdapter {
 
 /**
  * Create an LLM adapter from a resolved config.
- * @internal — use resolveConfig() to build the config from a model name.
+ * @internal - use resolveConfig() to build the config from a model name.
  */
 export function createAdapter(config: LLMConfig): LLMAdapter {
   switch (config.provider) {

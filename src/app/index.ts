@@ -164,7 +164,7 @@ export class SvaraApp {
       });
     }
 
-    // Health check — always available, no auth
+    // Health check - always available, no auth
     this.express.get('/health', (_req: Request, res: Response) => {
       res.json({
         status: 'ok',

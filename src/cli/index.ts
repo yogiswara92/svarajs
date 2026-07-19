@@ -32,13 +32,15 @@ program
   .option('--provider <provider>', 'LLM provider (openai|anthropic|ollama)', 'openai')
   .option('--channel <channels...>', 'Channels to include', ['web'])
   .option('--no-install', 'Skip npm install')
-  .action(async (name: string, opts: { provider: string; channel: string[]; install: boolean }) => {
+  .option('--standalone', 'Scaffold a standalone omnichannel assistant (svara.config.json + `svara start`) instead of a library-mode project')
+  .action(async (name: string, opts: { provider: string; channel: string[]; install: boolean; standalone?: boolean }) => {
     const { newProject } = await import('./commands/new.js');
     await newProject({
       name,
       provider: opts.provider as 'openai' | 'anthropic' | 'ollama',
       channels: opts.channel,
       installDeps: opts.install,
+      standalone: opts.standalone,
     });
   });
 
@@ -69,6 +71,20 @@ program
     } catch {
       process.exit(1);
     }
+  });
+
+// ── svara start ───────────────────────────────────────────────────────────────
+program
+  .command('start')
+  .description('Run as a standalone omnichannel assistant (agent + tools + channels + dashboard) from svara.config.json')
+  .option('--config <path>', 'Path to the runtime config file', 'svara.config.json')
+  .option('--port <port>', 'Override the port in the config file')
+  .action(async (opts: { config: string; port?: string }) => {
+    const { startCommand } = await import('./commands/start.js');
+    await startCommand({
+      config: opts.config,
+      port: opts.port ? parseInt(opts.port, 10) : undefined,
+    });
   });
 
 // ── svara db:* commands ────────────────────────────────────────────────────────

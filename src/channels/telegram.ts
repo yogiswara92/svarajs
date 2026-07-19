@@ -5,14 +5,19 @@
  * Used when you call: `agent.connectChannel('telegram', { token: '...' })`
  */
 
+import fs from 'fs/promises';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
-import type { IncomingMessage, ChannelName } from '../core/types.js';
+import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';
+import { getRegisteredFile } from '../tools/builtin/sendFile.js';
+import { attachProgressReporter } from './progressReporter.js';
 
 export interface TelegramChannelConfig {
   token: string;
   mode?: 'polling' | 'webhook';
   webhookUrl?: string;
   pollingInterval?: number;
+  /** Restrict the bot to these Telegram user IDs (from `msg.from.id`, e.g. via @userinfobot). Unset means anyone can use it. */
+  allowedUserIds?: string[];
 }
 
 interface TGUpdate {
@@ -27,10 +32,12 @@ export class TelegramChannel implements SvaraChannel {
   private baseUrl: string;
   private lastUpdateId = 0;
   private pollingTimer: ReturnType<typeof setInterval> | null = null;
+  private allowedUserIds: Set<string> | null;
 
   constructor(private config: TelegramChannelConfig) {
     if (!config.token) throw new Error('[@yesvara/svara] Telegram requires a bot token.');
     this.baseUrl = `https://api.telegram.org/bot${config.token}`;
+    this.allowedUserIds = config.allowedUserIds?.length ? new Set(config.allowedUserIds) : null;
   }
 
   async mount(agent: SvaraAgent): Promise<void> {
@@ -46,9 +53,10 @@ export class TelegramChannel implements SvaraChannel {
     }
   }
 
-  async send(sessionId: string, text: string): Promise<void> {
+  async send(sessionId: string, text: string, attachments?: Attachment[]): Promise<void> {
     const chatId = parseInt(sessionId, 10);
-    if (!isNaN(chatId)) await this.sendMessage(chatId, text);
+    if (isNaN(chatId)) return;
+    await this.deliver(chatId, null, text, attachments);
   }
 
   async stop(): Promise<void> {
@@ -74,6 +82,11 @@ export class TelegramChannel implements SvaraChannel {
 
   private async handleUpdate(update: TGUpdate): Promise<void> {
     const msg = update.message!;
+
+    // Silently drop rather than reply "not allowed" - confirming the bot
+    // exists to an unauthorized user is itself information leakage.
+    if (this.allowedUserIds && !this.allowedUserIds.has(String(msg.from.id))) return;
+
     const message: IncomingMessage = {
       id: String(msg.message_id),
       sessionId: String(msg.chat.id),
@@ -86,19 +99,72 @@ export class TelegramChannel implements SvaraChannel {
 
     await this.api('sendChatAction', { chat_id: msg.chat.id, action: 'typing' }).catch(() => {});
 
+    // No live streaming API for a chat message the way the web dashboard
+    // gets one over HTTP - approximated by sending a placeholder as soon as
+    // the first tool call happens, then editing it in place as more come in,
+    // so a slow multi-step reply doesn't look frozen for 20-30s before
+    // suddenly appearing. Reuses the same tool:call event the agent already
+    // emits for the web chat's streaming endpoint.
+    let progressMessageId: number | null = null;
+    const reporter = attachProgressReporter({
+      agent: this.agent,
+      sessionId: message.sessionId,
+      onUpdate: async (text) => {
+        if (progressMessageId === null) {
+          const sent = await this.api<{ message_id: number }>('sendMessage', { chat_id: msg.chat.id, text });
+          progressMessageId = sent.message_id;
+        } else {
+          await this.api('editMessageText', { chat_id: msg.chat.id, message_id: progressMessageId, text });
+        }
+      },
+    });
+
     try {
       const result = await this.agent.receive(message);
-      for (const chunk of this.split(result.response, 4096)) {
-        await this.sendMessage(msg.chat.id, chunk);
-      }
+      reporter.stop();
+      await this.deliver(msg.chat.id, progressMessageId, result.response, result.attachments);
     } catch (err) {
+      reporter.stop();
       await this.sendMessage(msg.chat.id, 'Sorry, something went wrong. Please try again.');
       console.error('[@yesvara/svara] Telegram error:', (err as Error).message);
     }
   }
 
+  /** Delivers a reply, editing an in-progress placeholder into the final text if one exists (see handleUpdate()) instead of sending it as a brand new message. */
+  private async deliver(chatId: number, progressMessageId: number | null, text: string, attachments?: Attachment[]): Promise<void> {
+    const [firstChunk, ...restChunks] = this.split(text, 4096);
+    if (progressMessageId !== null) {
+      try {
+        await this.api('editMessageText', { chat_id: chatId, message_id: progressMessageId, text: firstChunk, parse_mode: 'Markdown' });
+      } catch {
+        await this.sendMessage(chatId, firstChunk);
+      }
+    } else {
+      await this.sendMessage(chatId, firstChunk);
+    }
+    for (const chunk of restChunks) await this.sendMessage(chatId, chunk);
+
+    for (const attachment of attachments ?? []) {
+      await this.sendDocument(chatId, attachment).catch((err: Error) =>
+        console.error('[@yesvara/svara] Telegram sendDocument failed:', err.message)
+      );
+    }
+  }
+
   private async sendMessage(chatId: number, text: string): Promise<void> {
     await this.api('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' });
+  }
+
+  private async sendDocument(chatId: number, attachment: Attachment): Promise<void> {
+    const file = getRegisteredFile(attachment.token);
+    if (!file) return;
+    const buffer = await fs.readFile(file.absolutePath);
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('document', new Blob([buffer], { type: file.mimeType ?? 'application/octet-stream' }), file.filename);
+    const res = await fetch(`${this.baseUrl}/sendDocument`, { method: 'POST', body: form });
+    const data = await res.json() as { ok: boolean; description?: string };
+    if (!data.ok) throw new Error(data.description ?? 'sendDocument failed');
   }
 
   private async api<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {

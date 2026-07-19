@@ -6,10 +6,18 @@
  *
  * Requires the 'web' channel to be mounted first (it shares the Express server).
  * Webhook endpoint: POST /whatsapp/webhook
+ *
+ * Unlike Telegram/Discord/Slack (see progressReporter.ts), this channel does
+ * not show live tool-call progress on a long reply - the Cloud API has no
+ * edit-message endpoint, so there's no way to post a placeholder and update
+ * it in place the way the others do. A reply here only appears once the
+ * whole agent turn is done, same as before that feature existed.
  */
 
+import fs from 'fs/promises';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
-import type { IncomingMessage, ChannelName } from '../core/types.js';
+import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';
+import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import type express from 'express';
 
 export interface WhatsAppChannelConfig {
@@ -103,8 +111,13 @@ export class WhatsAppChannel implements SvaraChannel {
     console.log('[@yesvara/svara] WhatsApp webhook mounted at /whatsapp/webhook');
   }
 
-  async send(to: string, text: string): Promise<void> {
-    await this.sendMessage(to, text);
+  async send(to: string, text: string, attachments?: Attachment[]): Promise<void> {
+    for (const chunk of this.split(text, 4000)) await this.sendMessage(to, chunk);
+    for (const attachment of attachments ?? []) {
+      await this.sendDocument(to, attachment).catch((err: Error) =>
+        console.error('[@yesvara/svara] WhatsApp document upload failed:', err.message)
+      );
+    }
   }
 
   async stop(): Promise<void> { /* HTTP-based, no persistent connection */ }
@@ -122,12 +135,44 @@ export class WhatsAppChannel implements SvaraChannel {
 
     try {
       const result = await this.agent.receive(message);
-      for (const chunk of this.split(result.response, 4000)) {
-        await this.sendMessage(waMsg.from, chunk);
-      }
+      await this.send(waMsg.from, result.response, result.attachments);
     } catch (err) {
       await this.sendMessage(waMsg.from, 'Sorry, something went wrong. Please try again.');
       throw err;
+    }
+  }
+
+  // WhatsApp documents need a media_id, not raw bytes - upload first, then
+  // reference that id in the actual message.
+  private async sendDocument(to: string, attachment: Attachment): Promise<void> {
+    const file = getRegisteredFile(attachment.token);
+    if (!file) return;
+    const buffer = await fs.readFile(file.absolutePath);
+
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('file', new Blob([buffer], { type: file.mimeType ?? 'application/octet-stream' }), file.filename);
+    const uploadRes = await fetch(`${this.apiUrl}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.config.token}` },
+      body: form,
+    });
+    const uploadData = await uploadRes.json() as { id?: string; error?: { message: string } };
+    if (!uploadData.id) throw new Error(`WhatsApp API: ${uploadData.error?.message ?? 'media upload failed'}`);
+
+    const sendRes = await fetch(`${this.apiUrl}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${this.config.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'document',
+        document: { id: uploadData.id, filename: file.filename },
+      }),
+    });
+    if (!sendRes.ok) {
+      const err = await sendRes.json() as { error?: { message: string } };
+      throw new Error(`WhatsApp API: ${err.error?.message}`);
     }
   }
 

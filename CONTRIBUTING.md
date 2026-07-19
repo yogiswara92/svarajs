@@ -34,14 +34,32 @@ npm test          # Run tests
 src/
 ├── core/          # Agent, LLM, types
 ├── app/           # SvaraApp HTTP wrapper
-├── channels/      # Web, Telegram, WhatsApp
-├── rag/           # Document loading, chunking, retrieval
-├── memory/        # Conversation history
+├── channels/      # Web (+ streaming), Telegram, WhatsApp, Slack, Discord, progress reporter
+├── rag/           # Document loading, chunking, retrieval, embedding providers
+├── memory/        # Conversation history, context compaction, learning memory (MEMORY.md/USER.md)
 ├── tools/         # Tool definition & registry
+│   └── builtin/   # terminal, filesystem, web, browser, send_file tools (all opt-in)
+├── security/      # ApprovalGate, approval queue, path-traversal guard, secrets encryption
+├── skills/        # Skill registry + skills_list/skill_view/skill_manage
+├── delegation/    # Sub-agent delegation (delegate_task)
+├── cron/          # CronScheduler + the cronjob tool (optional deliver-to-channel)
+├── mcp/           # McpManager (client, parameter defaults) + official MCP Registry search
+├── integrations/  # Svaramind: guided MCP connect + workspace picker on top of mcp/
+├── runtime/       # Standalone runtime (svara.config.json → svara start)
+├── dashboard/     # Mounts the dashboard SPA + its API routes
 ├── database/      # SQLite wrapper
 ├── cli/           # CLI commands
 └── types.ts       # Public API types
+
+dashboard/         # Dashboard SPA (Svelte + Vite) - separate npm project, see below
 ```
+
+**The dashboard is a separate npm project.** It's not part of the main
+`tsup` build - run `npm install && npm run build` inside `dashboard/`
+directly, or `npm run build:dashboard` from the repo root. `svara start`
+serves whatever is in `dashboard/dist/`; if you haven't built it, `/dashboard`
+just shows a message telling you to build it - the rest of the runtime
+(agent, tools, `/chat`, `/api/*`) works fine either way.
 
 ---
 
@@ -153,16 +171,21 @@ async function load() {
 
 ## Testing
 
-Currently minimal test suite. Before submitting:
+`vitest` covers the core loop, tools (including all built-in tools), memory
+persistence, skills, delegation, cron, and the runtime config loader - see
+`src/__tests__/`. Before submitting:
 
 ```bash
+npm test
 npm run typecheck
 npm run build
 ```
 
-If adding features:
-- Test locally with `npm run dev`
-- Consider adding tests in `src/__tests__/`
+If adding a feature, add tests alongside the existing ones in
+`src/__tests__/` rather than relying on manual testing with `npm run dev`.
+Prefer fakes/stubs over real network calls (see how the LLM adapter, cron
+scheduler, and delegate tool tests fake `SvaraAgent`/`LLMAdapter` - no test
+in this repo requires a real API key or a running LLM to pass).
 
 ---
 

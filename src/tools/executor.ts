@@ -1,6 +1,6 @@
 /**
  * @internal
- * Tool executor — runs tool calls with timeout protection and error isolation.
+ * Tool executor - runs tool calls with timeout protection and error isolation.
  */
 
 import type { LLMToolCall, ToolExecution, InternalAgentContext } from '../core/types.js';

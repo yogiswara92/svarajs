@@ -1,6 +1,6 @@
 /**
  * @module cli/commands/dev
- * SvaraJS — `svara dev` command
+ * SvaraJS - `svara dev` command
  *
  * Starts a development server with hot-reload and a pretty REPL.
  * Wraps tsx watch for TypeScript + restarts on file changes.

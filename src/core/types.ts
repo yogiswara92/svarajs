@@ -1,7 +1,7 @@
 /**
  * @internal
  * Internal types for the SvaraJS framework engine.
- * These are NOT exported to users — see src/types.ts for the public API.
+ * These are NOT exported to users - see src/types.ts for the public API.
  */
 
 // ─── LLM Internals ───────────────────────────────────────────────────────────
@@ -95,6 +95,21 @@ export interface RetrievedDocument {
   excerpt: string;
 }
 
+/**
+ * A file the agent produced this turn (via the `send_file` tool) and wants
+ * handed back to whoever it's replying to. `token` addresses the file in the
+ * in-process registry (src/tools/builtin/sendFile.ts) - channels resolve it
+ * back to a real path to upload the bytes; `url` is the same file served
+ * over HTTP for the web dashboard, mounted wherever the dashboard is.
+ */
+export interface Attachment {
+  token: string;
+  filename: string;
+  mimeType?: string;
+  size: number;
+  url: string;
+}
+
 export interface AgentRunResult {
   response: string;
   sessionId: string;
@@ -103,6 +118,7 @@ export interface AgentRunResult {
   usage: TokenUsage;
   duration: number;
   retrievedDocuments?: RetrievedDocument[];
+  attachments?: Attachment[];
 }
 
 // ─── Memory Internals ────────────────────────────────────────────────────────
@@ -152,6 +168,8 @@ export interface RAGConfig {
     provider: 'openai' | 'ollama';
     apiKey?: string;
     model?: string;
+    /** Custom endpoint - an OpenAI-compatible host for `provider: 'openai'` (if one exists that also serves embeddings), or a non-default Ollama server URL for `provider: 'ollama'`. */
+    baseURL?: string;
   };
   chunking?: {
     strategy?: 'fixed' | 'sentence' | 'paragraph';
@@ -174,11 +192,19 @@ export interface RetrievedContext {
   totalFound: number;
 }
 
+export interface KnowledgeDocument {
+  documentId: string;
+  source: string;
+  chunkCount: number;
+}
+
 export interface RAGRetriever {
   init(config: RAGConfig): Promise<void>;
   addDocuments(filePaths: string[]): Promise<void>;
   retrieve(query: string, topK?: number): Promise<string>;
   retrieveChunks(query: string, topK?: number): Promise<RetrievedContext>;
+  listDocuments?(): Promise<KnowledgeDocument[]>;
+  removeDocument?(documentId: string): Promise<void>;
 }
 
 // ─── Channel Internals ───────────────────────────────────────────────────────

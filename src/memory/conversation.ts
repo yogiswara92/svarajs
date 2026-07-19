@@ -19,6 +19,21 @@ export class ConversationMemory {
     return this.sessions.get(sessionId)?.messages ?? [];
   }
 
+  /** True if this session already has an in-process history (no DB hydration needed). */
+  hasSession(sessionId: string): boolean {
+    return this.sessions.has(sessionId);
+  }
+
+  /** Seed the in-process cache from externally-loaded messages (e.g. SQLite), without re-persisting them. */
+  async hydrate(sessionId: string, messages: LLMMessage[]): Promise<void> {
+    if (this.sessions.has(sessionId) || messages.length === 0) return;
+    this.sessions.set(sessionId, {
+      messages,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+  }
+
   async append(sessionId: string, messages: LLMMessage[]): Promise<void> {
     if (this.config.type === 'none') return;
 
@@ -31,7 +46,7 @@ export class ConversationMemory {
     store.messages.push(...messages);
     store.updatedAt = new Date();
 
-    // Trim to window — always keep system messages
+    // Trim to window - always keep system messages
     if (store.messages.length > this.config.maxMessages) {
       const system = store.messages.filter((m) => m.role === 'system');
       const rest = store.messages.filter((m) => m.role !== 'system');
