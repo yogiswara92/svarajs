@@ -10,6 +10,7 @@ import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
 import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import { attachProgressReporter } from './progressReporter.js';
+import { toTelegramMarkdown, stripMarkdown } from './telegramFormat.js';
 
 export interface TelegramChannelConfig {
   token: string;
@@ -132,7 +133,11 @@ export class TelegramChannel implements SvaraChannel {
 
   /** Delivers a reply, editing an in-progress placeholder into the final text if one exists (see handleUpdate()) instead of sending it as a brand new message. */
   private async deliver(chatId: number, progressMessageId: number | null, text: string, attachments?: Attachment[]): Promise<void> {
-    const [firstChunk, ...restChunks] = this.split(text, 4096);
+    // Headers/tables/GFM **bold** have no equivalent (or a different one) in
+    // Telegram's legacy Markdown - convert before splitting, so a table
+    // isn't cut mid-row by the 4096-char chunk boundary.
+    const converted = toTelegramMarkdown(text);
+    const [firstChunk, ...restChunks] = this.split(converted, 4096);
     if (progressMessageId !== null) {
       try {
         await this.api('editMessageText', { chat_id: chatId, message_id: progressMessageId, text: firstChunk, parse_mode: 'Markdown' });
@@ -151,8 +156,13 @@ export class TelegramChannel implements SvaraChannel {
     }
   }
 
+  /** Sends with Markdown formatting, falling back to plain text (stripped of markdown syntax) if Telegram rejects the markdown as unparseable - a stray unbalanced `*`/`_` in the text otherwise silently drops the whole message. */
   private async sendMessage(chatId: number, text: string): Promise<void> {
-    await this.api('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' });
+    try {
+      await this.api('sendMessage', { chat_id: chatId, text, parse_mode: 'Markdown' });
+    } catch {
+      await this.api('sendMessage', { chat_id: chatId, text: stripMarkdown(text) });
+    }
   }
 
   private async sendDocument(chatId: number, attachment: Attachment): Promise<void> {
