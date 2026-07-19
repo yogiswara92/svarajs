@@ -1,0 +1,7 @@
+# Overrides dashboard/.gitignore for packing purposes - that file's `dist/`
+# rule is correct for git (build output shouldn't be committed) but wrong
+# for npm packing (dist/ is exactly what needs to ship - see the note in
+# the root .npmignore). node_modules never gets built anyway; kept here for
+# clarity, not because npm would otherwise include it from this subfolder.
+node_modules/
+*.log

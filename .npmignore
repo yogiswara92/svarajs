@@ -1,0 +1,15 @@
+# Overrides .gitignore for packing purposes - without this, npm falls back
+# to .gitignore (including nested ones like dashboard/.gitignore's `dist/`),
+# which would silently drop dist/ and dashboard/dist/ from the published
+# tarball even though package.json's "files" field lists them.
+#
+# The "files" field is the actual allowlist; this just stops build output
+# from being excluded a second time by rules meant for git, not npm.
+
+node_modules/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.svara/
