@@ -1,7 +1,7 @@
 /**
  * @module tools
  *
- * `createTool` — the elegant way to define tools for your agent.
+ * `createTool` - the elegant way to define tools for your agent.
  *
  * @example
  * ```ts
@@ -29,7 +29,7 @@ import type { Tool } from '../types.js';
 /**
  * Create a type-safe tool definition with IDE autocomplete.
  *
- * This is a convenience wrapper — it validates your tool at definition time
+ * This is a convenience wrapper - it validates your tool at definition time
  * and returns a properly typed `Tool` object.
  *
  * @example Basic tool
@@ -63,7 +63,7 @@ import type { Tool } from '../types.js';
  * ```
  */
 export function createTool(definition: Tool): Tool {
-  // Validate at definition time — fail fast, not at runtime
+  // Validate at definition time - fail fast, not at runtime
   if (!definition.name?.trim()) {
     throw new Error('[@yesvara/svara] createTool: "name" is required.');
   }

@@ -1,6 +1,6 @@
 /**
  * @module database/schema
- * SvaraJS — SQLite database schema
+ * SvaraJS - SQLite database schema
  *
  * DDL for all internal SvaraJS tables.
  * Users can extend this with their own tables via db.exec().
@@ -22,11 +22,23 @@ CREATE TABLE IF NOT EXISTS svara_messages (
   role        TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system', 'tool')),
   content     TEXT NOT NULL,
   tool_call_id TEXT,
+  metadata    TEXT,
   created_at  INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session
   ON svara_messages (session_id, created_at);
+
+-- Full-text search over all persisted messages, across every session - not
+-- just the current one (see memory/sessionSearchTool.ts). A plain (not
+-- external-content) FTS5 table kept in sync by SvaraDB.saveMessage() /
+-- clearSession() rather than SQL triggers, to keep write behavior explicit.
+CREATE VIRTUAL TABLE IF NOT EXISTS svara_messages_fts USING fts5(
+  content,
+  session_id UNINDEXED,
+  message_id UNINDEXED,
+  role UNINDEXED
+);
 
 -- User registry
 CREATE TABLE IF NOT EXISTS svara_users (

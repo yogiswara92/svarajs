@@ -1,6 +1,6 @@
 /**
  * @internal
- * Tool registry — stores and validates InternalTool definitions.
+ * Tool registry - stores and validates InternalTool definitions.
  */
 
 import type { InternalTool } from '../core/types.js';

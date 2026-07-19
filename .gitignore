@@ -16,6 +16,11 @@ build/
 out/
 .next
 .nuxt
+dashboard/dist/
+dashboard/node_modules/
+
+# Internal working docs — kajian/roadmap notes, not part of the published package
+/docs/
 
 # Environment
 .env

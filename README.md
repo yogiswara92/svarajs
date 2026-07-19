@@ -3,10 +3,12 @@
 
 <!-- # @yesvara/svara -->
 
-**Build AI agents in less than 9 lines. Ship to production.**
+**Build AI agents in less than 9 lines - or run one as a full standalone assistant.**
 
-A batteries-included Node.js framework for building agentic AI backends.  
-Multi-channel, RAG-ready, and designed for developers who value simplicity.
+A batteries-included Node.js framework for building agentic AI backends.
+Multi-channel, RAG-ready, with terminal/filesystem/browser tools, self-authoring
+skills, persistent memory, sub-agent delegation, cron, and a built-in dashboard,
+for developers who value simplicity.
 
 [![npm version](https://img.shields.io/npm/v/@yesvara/svara?color=0ea5e9&label=npm)](https://www.npmjs.com/package/@yesvara/svara)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
@@ -35,8 +37,36 @@ const app = new SvaraApp().route('/chat', agent.handler()).listen(3000);
 // Done. Your agent handles 1000 conversations.
 ```
 
-That's it. No pipeline setup. No embedding boilerplate. No webhook configuration.  
+That's it. No pipeline setup. No embedding boilerplate. No webhook configuration.
 **Convention over configuration (like Express, but for AI).**
+
+---
+
+## Two ways to run SvaraJS
+
+**Library mode** (above) - embed `SvaraAgent`/`SvaraApp` in your own Node.js
+backend. You own the process, the routes, the deployment. This is unchanged
+from earlier versions and is still the default `svara new` scaffold.
+
+**Standalone mode** - `svara start` boots SvaraJS itself as a full personal
+assistant: the agent, whichever built-in tools you enable (terminal,
+filesystem, web, browser), skills, persistent memory, cron jobs, every
+configured messaging channel, and a web dashboard to manage all of it - all
+from one `svara.config.json` file, no application code required.
+
+```bash
+npx svara new my-assistant --standalone
+cd my-assistant
+cp .env.example .env   # add your API keys
+npm start                # svara start
+```
+
+Then open **http://localhost:3000/dashboard** in a browser - that's the whole
+setup UI (chat, channels, tools, skills, memory, MCP, cron). No separate
+install or build step; it's served by `svara start` itself. Change `3000` to
+whatever `port` you set in `svara.config.json`. See
+[Standalone Runtime & Dashboard](#standalone-runtime--dashboard) below for
+the full config reference.
 
 ---
 
@@ -44,17 +74,33 @@ That's it. No pipeline setup. No embedding boilerplate. No webhook configuration
 
 |||
 |---|---|
-| **Zero-config LLM** | Pass a model name, provider is auto-detected |
+| **Zero-config LLM** | Pass a model name, provider is auto-detected (OpenAI, Anthropic, Ollama, Groq, or any OpenAI-compatible endpoint) |
 | **Instant RAG** | Point to a folder, documents are indexed automatically |
-| **Multi-channel** | WhatsApp, Telegram, and Web from one agent |
+| **Multi-channel** | WhatsApp, Telegram, Slack, Discord, and Web from one agent |
 | **Tool calling** | Declarative tools with full TypeScript types |
+| **Terminal, filesystem & web tools** | Opt-in built-in tools, gated by an approval layer - see [Security Model](#security-model) |
+| **Browser automation** | Playwright-backed `browser_*` tools (optional peer dependency) |
+| **Skills** | Self-authoring playbooks - the agent can read, create, and edit its own `SKILL.md` files |
+| **Skill hub** | `skill_install` pulls a `SKILL.md` from any public GitHub repo, guarded by trust tiers |
+| **Persistent memory** | Conversation history survives restarts (SQLite) + `MEMORY.md`/`USER.md` learning files |
+| **Full-text session search** | `session_search` finds anything said across every past conversation, zero LLM cost |
+| **Background auto-review** | The agent can learn (memory entries, new skills) after a reply, without being asked |
+| **Context compaction** | Long conversations are summarized automatically instead of silently truncated |
+| **Sub-agent delegation** | `delegate_task` spawns a focused child agent with a clean context |
+| **Cron / scheduled tasks** | The agent can create and manage its own recurring jobs, optionally delivering results straight to a connected channel |
+| **MCP servers** | Connect Model Context Protocol servers - browse/connect from the official registry, or manually - plus a dedicated guided Svaramind card |
+| **File delivery** | `send_file` hands a generated document back to the user - a download card on the web, a real document upload on Telegram/Discord/Slack/WhatsApp |
+| **Live tool-call streaming** | The dashboard's Chat page shows "Process steps" filling in as tools run, not just after the whole reply is done - Telegram/Discord/Slack get the same effect via live message editing |
+| **Configurable embeddings** | RAG indexing has its own provider/key/base URL, separate from the chat model - OpenAI-compatible or local Ollama |
+| **Standalone runtime + dashboard** | `svara start` runs SvaraJS as a full omnichannel assistant with a responsive web UI - chat, knowledge, MCP, cron, API keys, settings, and more |
+| **Secrets encrypted at rest** | Channel tokens, API keys, and other secrets in `svara.config.json` are AES-256-GCM encrypted, not plaintext |
+| **API key protection** | The public `POST /chat` endpoint can require a bearer token, separate from the dashboard's own admin token |
 | **Conversation memory** | Automatic per-session history, configurable window |
 | **Express-compatible** | `agent.handler()` drops into any existing app |
-| **Built-in database** | Persistent SQLite for users, sessions, RAG chunks, and state |
+| **Built-in database** | Persistent SQLite (with FTS5) for users, sessions, RAG chunks, and state |
 | **RAG per agent** | Each agent has isolated knowledge base, no cross-contamination |
-| **RAG persistence** | Vector embeddings stored in SQLite, auto-dedup |
 | **User tracking** | Auto-tracks users and sessions with timestamps |
-| **CLI included** | `svara new`, `svara dev`, `svara build` |
+| **CLI included** | `svara new`, `svara dev`, `svara build`, `svara start` |
 
 ---
 
@@ -73,6 +119,7 @@ cd my-agent
 ```
 
 This scaffolds a ready-to-run project with TypeScript, tools, and RAG setup.
+(Want the standalone assistant instead? `npx svara new my-agent --standalone` - see [below](#standalone-runtime--dashboard).)
 
 ### 3. Configure API keys
 
@@ -123,7 +170,7 @@ const agent = new SvaraAgent({
 });
 ```
 
-Add more documents anytime — just drop files in `docs/` and restart.
+Add more documents anytime - just drop files in `docs/` and restart.
 
 ---
 
@@ -138,11 +185,15 @@ SvaraJS auto-detects the LLM provider from the model name. No extra config neede
 | `llama3`, `mistral`, `gemma`, `phi3` | Ollama (local) | *(none)* |
 | `llama-3.1-70b-versatile`, `mixtral-8x7b` | Groq | `GROQ_API_KEY` |
 
+Any other model name (or an explicit `llm.provider`) falls back to Ollama -
+or point `llm.baseURL` at any OpenAI-compatible endpoint (OpenRouter, a
+self-hosted proxy, ...) with `provider: 'openai'`.
+
 ```ts
-// Switch models in one line — no other changes needed
-const agent = new SvaraAgent({ name: 'Aria', model: 'claude-opus-4-6' });
+// Switch models in one line - no other changes needed
 const agent = new SvaraAgent({ name: 'Aria', model: 'llama3' });         // local
 const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o-mini' });   // cheap & fast
+const agent = new SvaraAgent({ name: 'Aria', model: 'claude-opus-4-6' }); // Anthropic
 ```
 
 ---
@@ -159,9 +210,13 @@ const agent = new SvaraAgent({
   model: 'gpt-4o-mini',        // LLM model - provider auto-detected
   systemPrompt: 'You are...', // Optional - sensible default based on name
   knowledge: './docs',         // Optional - folder/glob for RAG
-  memory: { window: 20 },      // Optional - conversation history window
+  memory: { window: 20 },      // Optional - conversation history window, persisted to SQLite
   tools: [myTool],             // Optional - functions the agent can call
   temperature: 0.7,            // Optional - creativity (0–2)
+  contextWindow: 8000,         // Optional - token budget before context compaction kicks in
+  auxiliaryModel: 'gpt-4o-mini', // Optional - cheaper model used for compaction summaries
+  skillsDir: './skills',       // Optional - enables the skill system (see below)
+  learningMemory: true,        // Optional - enables MEMORY.md/USER.md (see below)
   verbose: true,               // Optional - detailed logs
 });
 ```
@@ -212,6 +267,252 @@ agent
   .addTool(emailTool)
   .addTool(databaseTool);
 ```
+
+### Built-in Tools (terminal, filesystem, web, browser)
+
+None of these are registered by default - opt in explicitly per agent.
+**Read [SECURITY.md](./SECURITY.md) before enabling `terminal_exec` or
+`file_write`** - the approval gate and path guard are heuristics, not a sandbox.
+
+```ts
+import {
+  SvaraAgent, createTerminalTool, createFilesystemTools,
+  createWebTools, createBrowserTools,
+} from '@yesvara/svara';
+
+const agent = new SvaraAgent({ name: 'Ops Bot', model: 'gpt-4o-mini' });
+
+agent.addTool(createTerminalTool({ cwd: process.cwd() })); // terminal_exec
+agent.addTool(...createFilesystemTools({ rootDir: './workspace' })); // file_read, file_write, list_files
+agent.addTool(...createWebTools({ searchApiKey: process.env.TAVILY_API_KEY })); // web_fetch, web_search
+agent.addTool(...createBrowserTools()); // browser_navigate, browser_get_text, browser_click, browser_screenshot
+```
+
+`terminal_exec` runs commands through an `ApprovalGate`: known-dangerous
+patterns (`rm -rf`, `sudo`, `mkfs`, fork bombs, ...) are blocked unless
+allowlisted or explicitly approved. For real isolation, run it against a
+container instead of the host:
+
+```ts
+agent.addTool(createTerminalTool({ backend: 'docker', dockerContainer: 'svara-sandbox' }));
+```
+
+Browser tools need the optional `playwright` peer dependency:
+
+```bash
+npm install playwright && npx playwright install chromium
+```
+
+### File Delivery
+
+A file `file_write` (or a script run through `terminal_exec` - e.g. a
+docx/xlsx/pptx-generating skill) creates just sits on the server's disk,
+invisible to whoever the agent is talking to, unless it's handed back
+explicitly:
+
+```ts
+agent.addTool(...createFilesystemTools({ rootDir: './workspace' }));
+agent.addTool(createSendFileTool({ rootDir: './workspace' })); // same rootDir as filesystem
+```
+
+The agent calls `send_file` once a file exists, and it's delivered on
+whichever surface it's replying through - a download card in the web
+dashboard's Chat page, or an actual document upload via each channel's
+native API (Telegram `sendDocument`, Discord attachment, Slack's upload
+flow, WhatsApp media message). In standalone mode this is wired up
+automatically whenever `tools.filesystem` is enabled.
+
+### Skills
+
+A skill is a `<id>/SKILL.md` file (YAML frontmatter + Markdown instructions),
+plus optional `references/`, `templates/`, `scripts/`, `assets/` subfolders
+for linked files - the agent can discover, read on demand, and - via
+`skill_manage` - write for itself once it finds an approach worth reusing.
+Frontmatter shape follows the open agentskills.io convention.
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Support Bot',
+  model: 'gpt-4o-mini',
+  skillsDir: './skills', // registers skills_list, skill_view, skill_manage
+});
+```
+
+```markdown
+<!-- skills/customer-refund/SKILL.md -->
+---
+name: Customer Refund
+description: How to handle a customer refund request
+version: 1.0.0
+metadata:
+  tags: [support, billing]
+  related_skills: [escalation]
+---
+
+1. Confirm the order ID and reason.
+2. Refunds under $50 can be approved directly.
+3. $50+ needs a human - say you're escalating. See references/escalation-policy.md.
+```
+
+- `name` max 64 chars, `description` max 1024 chars (only the first ~60 are
+  shown in the `skills_list` index - keep the lead-in short).
+- `skill_view` loads the full body by id, or pass `resourceDir` +
+  `filename` to load one specific file from `references/templates/scripts/assets`
+  instead (the "linked-file" tier - not loaded until asked for).
+- `skill_manage` actions: `create`, `edit`, `delete`, `write_file`,
+  `remove_file` (the last two manage files inside a skill's subfolders).
+
+**Guarding agent-created skills** - skills the agent writes for itself can be
+scanned for dangerous content (destructive/exfiltration patterns) before
+they're saved, off by default:
+
+```ts
+import { createSkillTools } from '@yesvara/svara';
+// wired manually since it needs the registry + an approval callback:
+const registry = agent.getSkillRegistry()!;
+agent.addTool(...createSkillTools(registry, {
+  guardAgentCreated: true,
+  onDangerousContent: async (skillId, findings) => confirmWithOperator(skillId, findings),
+}));
+```
+
+See [`examples/05-skills`](./examples/05-skills). `svara new --standalone`
+scaffolds a starter set of default skills into `skills/` (see below) - edit
+or delete them freely. No automatic archive lifecycle; skills live in a
+local directory, managed manually, by the agent itself, or installed from
+the hub below.
+
+#### Skill Hub
+
+Install a skill from any public GitHub repo instead of writing one from
+scratch:
+
+```ts
+import { createSkillHubTool } from '@yesvara/svara';
+agent.addTool(createSkillHubTool(agent.getSkillRegistry()!, {
+  onApprovalNeeded: async (skillId, verdict, findings) => confirmWithOperator(skillId, verdict, findings),
+}));
+```
+
+The agent (or a user, via the dashboard) calls it with a source:
+`owner/repo`, `owner/repo@branch/path/to/skill`, or a full raw `SKILL.md`
+URL. Hub installs always go through the strictest trust tier - see
+[Security Model](#security-model) - so unfamiliar content needs explicit
+approval before it's saved. Only fetches `SKILL.md` itself, not a skill's
+`references/templates/scripts/assets` subfolders; add those afterward via
+`skill_manage`'s `write_file` action if needed.
+
+### Learning Memory (MEMORY.md / USER.md)
+
+Persistent notes injected into the system prompt: `MEMORY.md` for what the
+agent has learned about its environment/conventions, `USER.md` for what it's
+learned about the person it's talking to. Entries are delimited by `§`.
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Assistant',
+  model: 'gpt-4o-mini',
+  learningMemory: true, // or { dir: './memory' } - registers the `memory` tool
+});
+```
+
+The agent calls the `memory` tool with `action: 'add' | 'replace' | 'remove'`
+and `target: 'agent' | 'user'` to manage its own notes. Three safeguards,
+since this content is re-injected into every future system prompt:
+
+- **Content scan** - new entries matching a destructive/exfiltration pattern
+  are rejected (`DangerousContentError`), not silently persisted.
+- **Drift detection** - if a human edited `MEMORY.md`/`USER.md` directly
+  since the agent last read it, the write is refused and the agent's
+  attempted content is saved to `MEMORY.md.bak.<timestamp>` instead of
+  clobbering the edit (`DriftDetectedError`).
+- **Atomic writes** - every write is temp-file-then-rename, so a crash
+  mid-write can't leave a half-written file.
+
+### Full-Text Session Search
+
+Search across every past conversation, not just the current session's
+recent-window memory - backed by SQLite FTS5, so it costs zero LLM tokens
+per lookup. Registered automatically as the `session_search` tool whenever
+persistent memory is on (the default - `memory: true` or `{ persist: true }`),
+no extra config needed.
+
+The `session_search` tool has three actions, mirroring how a person would
+actually dig through old chats:
+
+- `search` - full-text query across all sessions (implicit AND between words).
+- `browse` - list recent sessions with a preview, when you don't have a search term yet.
+- `context` - pull the messages immediately before/after a specific hit, for surrounding context.
+
+### Background Auto-Review
+
+The agent can learn from an exchange without being explicitly asked to -
+after each reply, a lightweight review pass (fire-and-forget, never blocks
+or fails the user-facing response) decides whether anything is worth saving
+as a memory entry or a new skill.
+
+```ts
+const agent = new SvaraAgent({
+  name: 'Assistant',
+  model: 'gpt-4o-mini',
+  learningMemory: true,
+  skillsDir: './skills',
+  backgroundReview: true, // reviews every exchange once memory and/or skills are configured
+});
+```
+
+Runs with its own short tool-calling loop (default cap: 3 iterations) using
+only the `memory` and `skill_manage` tools - never `skills_list`/`skill_view`,
+since the review already has the exchange in hand and doesn't need to browse.
+A failure in the review (e.g. the LLM call errors) is logged and swallowed,
+never surfaced to the user or the calling code.
+
+### Delegation (sub-agents)
+
+Delegate a self-contained task to a fresh child agent with a clean context
+and a restricted toolset (no further delegation, no memory writes by default):
+
+```ts
+import { createDelegateTools } from '@yesvara/svara';
+
+const agent = new SvaraAgent({ name: 'Lead', model: 'gpt-4o' });
+agent.addTool(...createDelegateTools(agent)); // needs the constructed agent, wired after the fact
+```
+
+The child inherits the parent's LLM provider by default; override with
+`createDelegateTools(agent, { model: 'gpt-4o-mini' })` for cheaper delegated
+work. Supports `background: true` for fire-and-forget tasks, polled via the
+`delegate_status` tool.
+
+### Cron / Scheduled Tasks
+
+Let the agent create and manage its own recurring jobs:
+
+```ts
+import { CronScheduler, createCronTool } from '@yesvara/svara';
+
+const scheduler = new CronScheduler({
+  agent,
+  onResult: (job, response) => console.log(`[${job.id}]`, response),
+});
+agent.addTool(createCronTool(scheduler)); // the `cronjob` tool: create/list/delete
+
+scheduler.create('0 9 * * *', 'Summarize overnight activity and report it.');
+
+// Optional 4th argument: a display name, and skill ids to scope the job to -
+// their full instructions get prepended to the prompt on every run instead
+// of the agent browsing its whole skill set each time.
+scheduler.create('*/30 * * * *', 'Check for anything urgent.', undefined, {
+  name: 'Urgency check',
+  skills: ['daily-briefing'],
+});
+```
+
+In the dashboard, the **Cron** page's "New job" form builds the cron expression
+for you - pick "Every interval" (every N minutes/hours), "Every day"/"Every
+week" (a day + time picker), "Every hour" (a specific minute), or drop into a
+raw cron expression under "Custom". The job list shows a human-readable
+schedule (e.g. "Every 30 minutes") alongside the underlying cron expression.
 
 ### RAG (Knowledge Base)
 
@@ -317,7 +618,7 @@ const result = await agent.process('Help me with my order', {
 // Database tracks:
 // - svara_users: user-123 (first_seen, last_seen, metadata)
 // - svara_sessions: session details, linked to user-123
-// - svara_messages: conversation history for this session
+// - svara_messages: conversation history for this session (persisted - survives restarts)
 ```
 
 Query user data:
@@ -360,10 +661,100 @@ agent
     token: process.env.WA_TOKEN,
     phoneId: process.env.WA_PHONE_ID,
     verifyToken: process.env.WA_VERIFY_TOKEN,
-  });
+  })
+  .connectChannel('slack', {
+    botToken: process.env.SLACK_BOT_TOKEN,
+    signingSecret: process.env.SLACK_SIGNING_SECRET,
+  })
+  .connectChannel('discord', { botToken: process.env.DISCORD_BOT_TOKEN });
 
 await agent.start(); // Start all channels
 ```
+
+Notes on the webhook-based channels (WhatsApp, Slack):
+- Both mount their routes onto the `'web'` channel's Express app, so connect `'web'` first (or, in standalone mode, the runtime does this for you automatically).
+- Slack verifies every request's `X-Slack-Signature` (HMAC-SHA256 over the raw body + timestamp) before processing it, and drops requests older than 5 minutes.
+
+Discord uses a persistent Gateway WebSocket instead of a webhook (Discord has no
+webhook option for regular bots), so it does not need the `'web'` channel -
+it reconnects automatically if the connection drops.
+
+### MCP Servers
+
+Connect a [Model Context Protocol](https://modelcontextprotocol.io) server and
+its tools become available to the agent automatically, namespaced
+`mcp__<serverId>__<toolName>` so two servers can't collide on a tool name.
+Uses the official `@modelcontextprotocol/sdk` - both locally-spawned
+(`stdio`) and remote (`streamable-http`/`sse`) servers are supported.
+
+```ts
+import { McpManager } from '@yesvara/svara';
+
+const mcp = new McpManager(agent); // needs the constructed agent, same pattern as delegation/cron
+
+await mcp.connect({
+  id: 'filesystem',
+  name: 'Filesystem',
+  transport: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-everything'] },
+});
+
+// Or a remote server:
+await mcp.connect({
+  id: 'weather',
+  name: 'Weather',
+  transport: { type: 'streamable-http', url: 'https://weather.example.com/mcp', headers: { Authorization: `Bearer ${process.env.WEATHER_TOKEN}` } },
+});
+
+mcp.list();              // -> [{ id, name, transport, tools, connectedAt, pinnedParams }, ...]
+await mcp.disconnect('filesystem');
+```
+
+In standalone mode, the dashboard's **MCP** page lists servers from the
+[official MCP Registry](https://registry.modelcontextprotocol.io) (backed by
+Anthropic, GitHub, and Microsoft) - search, and connect with one click (it auto-resolves the best transport: a remote
+endpoint if the registry entry has one, otherwise an `npx`-launched stdio
+package). You can also add a server manually by command or URL. Connected
+servers persist to `svara.config.json`'s `mcpServers` array and reconnect
+automatically on the next `svara start`.
+
+**This is an operator action, not an agent-callable tool** - there is no
+`mcp_connect` tool exposed to the LLM. See the MCP section of
+[SECURITY.md](./SECURITY.md) for why that boundary matters (a `stdio` server
+is an arbitrary local process you're choosing to run).
+
+**Pinning a parameter** - some MCP servers repeat the same "context" argument
+(a workspace id, a project id, a tenant id) across every tool. Instead of
+making the agent guess or re-ask which one to use every time, give it a
+default once:
+
+```ts
+mcp.pinParameter('my-server', 'workspace_id', 'ws-123');
+// workspace_id stays visible to the LLM (as an optional parameter, with the
+// default called out in its description) - omit it and the pinned value is
+// auto-injected, or pass a different one explicitly to use another
+// workspace for that one call. It's a default, not a hard restriction.
+
+// For setup flows (e.g. listing workspaces before the agent is involved):
+await mcp.callToolDirect('my-server', 'list_workspaces');
+```
+
+#### Svaramind
+
+The dashboard's MCP page has a dedicated **Svaramind** card (Yesvara's
+knowledge/notes product) - click "Connect with Svaramind", sign in on
+Svaramind's own hosted page in a popup (full OAuth 2.1 + PKCE + RFC 7591
+dynamic client registration - SvaraJS never sees your password), then pick a
+**default workspace** so the agent doesn't have to ask every time. It can
+still search or write to any other workspace in your account when a request
+actually calls for it (`svaramind_list_workspaces` is unrestricted) - the
+picked workspace is only what gets used when none is specified. The access
+token is short-lived (1 hour); the runtime checks its remaining lifetime on
+every `svara start` and only mints a fresh one (rotating the stored refresh
+token) when it's actually close to expiring, instead of unconditionally on
+every boot - a long-running standalone assistant may still need an
+occasional restart (the dashboard's restart button) if it's been up longer
+than an hour with no boot in between, since the refresh only happens at
+startup, not on a timer while already running.
 
 ### Events
 
@@ -451,6 +842,11 @@ agent
 await agent.start();
 ```
 
+### Agent with skills
+
+See [`examples/05-skills`](./examples/05-skills) - an agent that discovers,
+reads, and writes its own `SKILL.md` playbooks.
+
 ### Drop into an existing Express app
 
 ```ts
@@ -491,7 +887,7 @@ await agent.addKnowledge(['./faq.md', './terms.txt', './pricing.pdf']);
 // Agent immediately has the new knowledge
 ```
 
-**Real-world example** — admin endpoint to upload documents:
+**Real-world example** - admin endpoint to upload documents:
 
 ```ts
 const app = new SvaraApp({ cors: true });
@@ -559,7 +955,7 @@ agent
 
 ## CLI
 
-### Create a new project
+### `svara new <name>` - create a new project
 
 ```bash
 svara new my-app
@@ -572,6 +968,7 @@ Output:
   ✓ package.json
   ✓ tsconfig.json
   ✓ .env.example
+  ✓ .gitignore
   ✓ src/index.ts
   ✓ docs/README.md
 
@@ -585,87 +982,56 @@ Output:
 ```
 
 Options:
-- `--template <name>` — Use a specific template (default: `basic`)
-  - `basic` — Simple agent with HTTP endpoint
-  - `rag` — RAG-powered agent with document loader
-  - `multi-channel` — Web + Telegram + WhatsApp setup
-  - `tools` — Agent with tool calling examples
+- `--provider <provider>` - `openai` | `anthropic` | `ollama` (default: `openai`)
+- `--channel <channels...>` - channels to scaffold, e.g. `--channel web telegram` (default: `web`)
+- `--no-install` - skip `npm install`
+- `--standalone` - scaffold a [standalone assistant](#standalone-runtime--dashboard) (`svara.config.json` + `svara start`) instead of a library-mode project
 
-### Start development server
+### `svara dev` - start development server
 
 ```bash
 svara dev
 ```
 
-Features:
-- Hot-reload on file changes
-- Auto-restart agent on code updates
-- Debug logging enabled
-- Serves on `http://localhost:3000` (configurable)
+Hot-reloads on file changes (via `tsx watch`), auto-detects the entry file
+(`src/index.ts`, `src/app.ts`, `src/main.ts`, or `index.ts`).
 
 Options:
-- `--port <number>` — Custom port (default: `3000`)
-- `--watch <glob>` — Watch additional paths (default: `src/**`)
-- `--env <file>` — Load custom .env file
+- `--entry <file>` - entry file (default: `src/index.ts`)
+- `--port <port>` - overrides the `PORT` env variable
 
-### Build for production
+### `svara build` - compile for production
 
 ```bash
 svara build
 ```
 
-Outputs:
-- `dist/` — Compiled JavaScript
-- `dist/index.js` — Entry point (ready for Node or Docker)
-- Source maps and type declarations included
+Runs `tsc` and outputs plain JavaScript to `dist/`, ready for `node dist/index.js` or a Docker image.
 
-Options:
-- `--minify` — Minify output
-- `--sourcemaps` — Include source maps (default: true)
-- `--outdir <path>` — Custom output directory (default: `dist/`)
-
-### Running built projects
+### `svara start` - run as a standalone assistant
 
 ```bash
-# After building
-node dist/index.js
-
-# Or with env file
-NODE_ENV=production OPENAI_API_KEY=sk-... node dist/index.js
+svara start
 ```
 
-### Database management
-
-```bash
-# Initialize database (auto-creates tables)
-svara db init
-
-# Show database schema
-svara db schema
-
-# Export users and conversation history
-svara db export --format json
-svara db export --format csv --table svara_messages
-
-# Query database directly
-svara db query "SELECT COUNT(*) FROM svara_users"
-
-# Reset database (⚠️ deletes all data)
-svara db reset
-
-# Backup database
-svara db backup --output backup-2026-01-15.db
-
-# Restore from backup
-svara db restore --input backup-2026-01-15.db
-```
+Boots the [standalone runtime](#standalone-runtime--dashboard) from `svara.config.json` - see that section for the full config reference.
 
 Options:
-- `--db <path>` — Custom database path (default: `./data/svara.db`)
-- `--format <type>` — Export format: `json`, `csv`, `sql` (default: `json`)
-- `--table <name>` — Specific table to export
-- `--output <path>` — Output file path
-- `--force` — Skip confirmation prompts (use with `reset` carefully!)
+- `--config <path>` - path to the config file (default: `svara.config.json`)
+- `--port <port>` - overrides the `port` in the config file
+
+### `svara db:*` - inspect the local database
+
+```bash
+svara db:stats                       # row counts per table
+svara db:list-chunks --agent MyBot   # RAG chunks for one agent
+svara db:search "refund policy"      # search chunk content
+svara db:users                       # list tracked users
+svara db:sessions --user alice@example.com
+svara db:clear-chunks MyBot --yes    # delete an agent's RAG chunks (requires --yes)
+```
+
+These operate on `./data/svara.db` in the current directory.
 
 ---
 
@@ -709,50 +1075,170 @@ db.transaction(() => {
 
 ---
 
+## Standalone Runtime & Dashboard
+
+`svara start` reads `svara.config.json` and boots the agent, its tools,
+channels, cron jobs, and a web dashboard - no application code needed. Scaffold
+one with `svara new my-assistant --standalone`, or write it by hand:
+
+```json
+{
+  "name": "My Assistant",
+  "model": "gpt-4o-mini",
+  "systemPrompt": "You are a helpful personal assistant.",
+  "tools": {
+    "terminal": false,
+    "filesystem": { "rootDir": "./workspace" },
+    "web": true,
+    "browser": false
+  },
+  "skillsDir": "./skills",
+  "learningMemory": true,
+  "backgroundReview": true,
+  "channels": {
+    "telegram": {},
+    "slack": {},
+    "discord": {}
+  },
+  "cron": [
+    { "schedule": "0 9 * * *", "prompt": "Summarize overnight activity." }
+  ],
+  "mcpServers": [],
+  "port": 3000,
+  "dashboard": true
+}
+```
+
+- `tools.*` - `false` to disable, `true` for defaults, or an options object (matching each `create*Tool(s)` function's options). Enabling `filesystem` also registers `send_file`, so anything the agent writes can actually be handed back to whoever it's talking to (see **File delivery** below).
+- `embeddings` - `{ provider: 'openai' | 'ollama', apiKey?, model?, baseURL? }` for RAG indexing (Knowledge page uploads, `knowledge` docs) - separate from `llm` above, since a chat-completions endpoint doesn't necessarily also serve embeddings on the same account/key. Defaults to OpenAI if unset. `baseURL` points `openai` at any OpenAI-compatible embeddings host, or `ollama` at a non-default/remote server.
+- `apiKey` - protects the public `POST /chat` endpoint (what channels, an embedded widget, or any external caller hit) with `Authorization: Bearer <apiKey>`. **Unset by default** - anyone who can reach the port can use the agent for free otherwise. Separate from `dashboard.token` below, which only protects the dashboard's own `/api/*` routes.
+- `channels.telegram`/`whatsapp`/`slack`/`discord` - tokens/secrets are optional here; if omitted, the runtime falls back to the same env vars `svara new` scaffolds into `.env.example` (`TELEGRAM_BOT_TOKEN`, `WA_ACCESS_TOKEN`/`WA_PHONE_ID`/`WA_VERIFY_TOKEN`, `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET`, `DISCORD_BOT_TOKEN`), so secrets don't need to live in the config file. WhatsApp and Slack are webhook-based and mount onto the runtime's own web server automatically; Discord opens its own Gateway WebSocket.
+- `channels.telegram.allowedUserIds` - restrict the bot to specific Telegram user IDs (get one by messaging @userinfobot), e.g. `["123456789", "987654321"]`. Messages from anyone else are silently dropped, no reply sent. Unset means anyone can use the bot. Also settable from the dashboard's **Channels** page.
+- `mcpServers` - MCP (Model Context Protocol) servers to connect on boot, each `{ id, name, transport }` (`transport.type`: `stdio` with `command`/`args`/`env`, or `streamable-http`/`sse` with `url`/`headers`). Reconnects automatically on every `svara start`. See [MCP servers](#mcp-servers) below and the security note in [SECURITY.md](./SECURITY.md).
+- `cron[].deliverTo` - `{ channel: 'telegram' | 'whatsapp' | 'slack' | 'discord', target: string }` pushes a scheduled job's result to that channel (in addition to the server log) once it finishes running - `target` is channel-specific (a Telegram chat id, a Discord channel id, a Slack channel id/name, a WhatsApp phone number). Omit it to keep the job local-only.
+- `dashboard` - `true` for an unauthenticated dashboard (fine for `localhost`), or `{ "token": "..." }` to bearer-protect the `/api/*` routes (the dashboard UI will prompt for it once and remember it).
+
+Once running, open `http://localhost:<port>/dashboard` (`<port>` defaults to
+`3000`) in a browser - that's the entire admin UI, no extra install or build
+step needed. If `dashboard.token` is set, it'll prompt for that token once
+and remember it.
+
+- `POST /chat` - same request/response shape as library mode (see [Web API Reference](#web-api-reference)), optionally protected by `apiKey` above
+- `GET /dashboard` - the web UI:
+  - **Chat** - talk to the agent directly, with a session sidebar (every past conversation is already persisted to SQLite - switch between them, start a new one, delete one). Tool calls stream in live via `POST /api/chat/stream` as they happen (a "Process steps" panel fills in progressively instead of only appearing once the whole reply is done), and any file the agent produced (via `send_file`) shows up as a download card. Markdown (tables, code, bold, links) renders properly, not as raw syntax
+  - **General** / **AI Provider** / **Capabilities** / **Channels** / **API & Webhooks** - five editable settings pages (name/prompt/port; chat model + a separate Embeddings section for RAG; tool toggles + skills dir + learning memory + background auto-review + max tool-calling iterations; Telegram/WhatsApp/Slack/Discord as cards, each with a "Disconnect" button that actually clears stored credentials; the chat API key, the dashboard's own admin token, and a reference list of each connected channel's inbound webhook URL) - each writes only its own fields back to `svara.config.json`. Secrets are encrypted at rest (see [Security Model](#security-model)) and round-trip as `[set]` in the API - the dashboard never receives a real secret back once it's saved
+  - **Tools** - active tools + pending command approvals (approve/deny); the Capabilities page also detects when Browser is enabled but the optional `playwright` package isn't actually installed and offers a one-click install
+  - **Skills** - create/edit/delete, or install from the hub
+  - **Knowledge** - drag-and-drop upload for RAG documents (.pdf .docx .txt .md .mdx .rst .csv .log .jsonl), list indexed documents with their chunk counts, remove one
+  - **MCP** - browse the [official MCP Registry](https://registry.modelcontextprotocol.io), connect a server with one click (or add one manually by command/URL), see which tools each connected server exposed, disconnect
+  - **Memory** - edit `MEMORY.md`/`USER.md`
+  - **Cron** - create/delete scheduled jobs with a friendly interval/day/time picker (or a raw cron expression), an optional name, optional skill scoping, and an optional "Deliver to" channel (only channels actually connected show up as options) so a job's result gets pushed there instead of just the server log (the scheduler is always available, even before the first job exists)
+- `GET /health` - health check
+
+Delegation (`delegate_task`) is always available in standalone mode, inheriting
+whichever tools you enabled above. Shut down gracefully with `Ctrl+C` - it
+stops cron jobs, closes the browser (if used), and disconnects channels.
+
+---
+
+## Security Model
+
+SvaraJS's built-in tools (`terminal_exec`, `file_write`, `web_fetch`,
+`browser_*`) give an agent real capabilities on your machine. None are
+registered by default. **The approval gate and path guard are heuristics, not
+a sandbox** - read [SECURITY.md](./SECURITY.md) before enabling any of them,
+especially in standalone mode or with untrusted input.
+
+The standalone runtime's public `POST /chat` has **no authentication by
+default** - anyone who can reach the port can use the agent (and any tool
+you've enabled) for free. Set `apiKey` in `svara.config.json` (or via the
+dashboard's **API & Webhooks** page) before exposing it beyond `localhost`.
+This is separate from `dashboard.token`, which only protects the dashboard's
+own `/api/*` routes.
+
+Channel tokens, API keys (chat + embeddings), signing secrets, and the
+dashboard bearer token are encrypted (AES-256-GCM) before being written to
+`svara.config.json`, keyed by a local, gitignored `.svara/secrets.key`
+generated on first save. This protects the config file leaking on its own
+(an accidental commit, a screenshot, a config-only backup) - it does not
+protect against an attacker with full filesystem access on the same
+machine, since the key sits right next to the file it encrypts. See
+[SECURITY.md](./SECURITY.md) for the full threat model and what to do if
+you move a config to a new machine.
+
+---
+
 ## Architecture
 
 ```
 @yesvara/svara/
 ├── src/
 │   ├── core/
-│   │   ├── agent.ts        # SvaraAgent — the main class
+│   │   ├── agent.ts        # SvaraAgent - the main class
 │   │   ├── llm.ts          # LLM abstraction + provider auto-detection
 │   │   └── types.ts        # Internal types
 │   ├── app/
-│   │   └── index.ts        # SvaraApp — HTTP framework wrapper
+│   │   └── index.ts        # SvaraApp - HTTP framework wrapper
 │   ├── channels/
-│   │   ├── web.ts          # REST API + SSE streaming
+│   │   ├── web.ts          # REST API + streaming chat endpoint
 │   │   ├── telegram.ts     # Telegram Bot API (polling + webhook)
-│   │   └── whatsapp.ts     # Meta WhatsApp Cloud API
+│   │   ├── whatsapp.ts     # Meta WhatsApp Cloud API (webhook)
+│   │   ├── slack.ts        # Slack Events API (webhook, signature-verified)
+│   │   ├── discord.ts      # Discord Gateway (persistent WebSocket)
+│   │   └── progressReporter.ts # Live "what's it doing" via message editing (Telegram/Discord/Slack)
 │   ├── rag/
 │   │   ├── loader.ts       # Document loading (PDF, MD, DOCX, ...)
 │   │   ├── chunker.ts      # Chunking strategies (sentence, paragraph, fixed)
 │   │   └── retriever.ts    # Vector similarity search
 │   ├── memory/
-│   │   ├── conversation.ts # Per-session history with auto-trim
-│   │   └── context.ts      # LLM message builder + RAG injection
+│   │   ├── conversation.ts # Per-session history - in-process cache, persisted to SQLite
+│   │   ├── context.ts      # LLM message builder + RAG injection
+│   │   ├── compressor.ts   # Context compaction (summarize-the-middle)
+│   │   ├── tokenizer.ts    # Real token counting (gpt-tokenizer)
+│   │   ├── learningFiles.ts # MEMORY.md / USER.md
+│   │   ├── learningTools.ts # The `memory` tool
+│   │   ├── sessionSearchTool.ts # The `session_search` tool (SQLite FTS5)
+│   │   └── backgroundReview.ts  # Fire-and-forget post-reply learning pass
 │   ├── tools/
 │   │   ├── index.ts        # createTool() helper
 │   │   ├── registry.ts     # Tool store
-│   │   └── executor.ts     # Concurrent execution with timeout protection
+│   │   ├── executor.ts     # Concurrent execution with timeout protection
+│   │   └── builtin/        # terminal, filesystem, web, browser, send_file
+│   ├── security/
+│   │   ├── approval.ts     # ApprovalGate - dangerous-command detection + allowlist
+│   │   ├── approvalQueue.ts # Bridges ApprovalGate to the dashboard's approve/deny UI
+│   │   ├── pathGuard.ts    # Path-traversal protection
+│   │   ├── secretFields.ts # Single source of truth for "which config keys hold a secret"
+│   │   └── secretsCrypto.ts # AES-256-GCM encryption for secrets in svara.config.json
+│   ├── skills/              # Skill registry, parser, skills_list/skill_view/skill_manage tools, and the GitHub skill hub
+│   ├── delegation/          # delegate_task / delegate_status
+│   ├── cron/                 # CronScheduler + the cronjob tool
+│   ├── mcp/                  # McpManager (client, incl. parameter pinning) + official MCP Registry search
+│   ├── integrations/          # Svaramind: guided MCP connect + workspace picker on top of mcp/
+│   ├── runtime/              # Standalone runtime: svara.config.json loader + boot sequence
+│   ├── dashboard/            # Mounts the dashboard SPA + its /api/* routes
 │   ├── database/
-│   │   ├── sqlite.ts       # SvaraDB wrapper (query, kv, transaction)
-│   │   └── schema.ts       # Internal SQLite schema
-│   ├── cli/                # svara new / dev / build
-│   ├── types.ts            # Public types (exported to users)
-│   └── index.ts            # Public API surface
+│   │   ├── sqlite.ts        # SvaraDB wrapper (query, kv, transaction)
+│   │   └── schema.ts        # Internal SQLite schema
+│   ├── cli/                  # svara new / dev / build / start / db:*
+│   ├── types.ts              # Public types (exported to users)
+│   └── index.ts              # Public API surface
+├── dashboard/                # Dashboard SPA (Svelte + Vite) - built separately, served by `svara start`
 └── examples/
-    ├── 01-basic/           # 10-line agent
-    ├── 02-with-tools/      # createTool + events
-    ├── 03-rag-knowledge/   # Document Q&A
-    └── 04-multi-channel/   # Web + Telegram + WhatsApp
+    ├── 01-basic/             # 10-line agent
+    ├── 02-with-tools/        # createTool + events
+    ├── 03-rag-knowledge/     # Document Q&A
+    ├── 04-multi-channel/     # Web + Telegram + WhatsApp
+    └── 05-skills/            # Self-authoring skills
 ```
 
 ---
 
 ## Web API Reference
 
-When using `app.route('/chat', agent.handler())`:
+When using `app.route('/chat', agent.handler())` (library mode), or the
+standalone runtime's own `POST /chat` (same shape, optionally protected by
+`apiKey` - see [Standalone Runtime & Dashboard](#standalone-runtime--dashboard)):
 
 **`POST /chat`**
 
@@ -765,6 +1251,8 @@ Request:
 }
 ```
 
+If `apiKey` is set on the standalone runtime, include `Authorization: Bearer <apiKey>`.
+
 Response:
 ```json
 {
@@ -775,13 +1263,25 @@ Response:
     "completionTokens": 89,
     "totalTokens": 401
   },
-  "toolsUsed": []
+  "toolsUsed": [],
+  "attachments": []
 }
 ```
 
+`attachments` is only present when the agent called `send_file` this turn -
+each entry is `{ token, filename, mimeType, size, url }`; `url` is a
+download link served by the dashboard (`GET /api/files/:token`), valid as
+long as the process that generated it stays up.
+
 **Note:** `userId` and `sessionId` are automatically tracked in the SQLite database for user management and conversation history.
 
-**`GET /health`** — always returns `{ "status": "ok" }`
+**`GET /health`** - always returns `{ "status": "ok" }`
+
+The standalone dashboard's own `/api/*` surface (chat streaming, config,
+knowledge, skills, cron, MCP, file downloads, ...) is internal to the
+dashboard UI, bearer-protected by `dashboard.token` when set - see
+[Standalone Runtime & Dashboard](#standalone-runtime--dashboard) rather than
+treated as a stable public API.
 
 ---
 
@@ -793,7 +1293,7 @@ SvaraJS automatically creates and manages these SQLite tables:
 |-------|---------|--------------|
 | `svara_users` | User registry (first_seen, last_seen, metadata) | ✅ Yes |
 | `svara_sessions` | Conversation sessions linked to users | ✅ Yes |
-| `svara_messages` | Full conversation history per session | ✅ Yes |
+| `svara_messages` | Full conversation history per session - persisted, survives restarts. Each assistant reply's `metadata` column carries its reasoning trace (tools used, iteration count, RAG sources, attachments) so the dashboard's Chat page can restore it after a page reload | ✅ Yes |
 | `svara_chunks` | RAG vectors **isolated per agent** with deduplication | ✅ Yes |
 | `svara_documents` | Document registry and metadata | ✅ Yes |
 | `svara_kv` | Key-value store for app state | ✅ Yes |
@@ -853,6 +1353,6 @@ MIT © [Yesvara](https://github.com/yogiswara92)
 
 Built with ❤️ for developers who want to ship AI, not fight infrastructure.
 
-**[Documentation](https://svarajs.yesvara.com)** · **[Examples](./examples)** · **[npm](https://npmjs.com/package/@yesvara/svara)**
+**[Documentation](https://svarajs.yesvara.com)** · **[Examples](./examples)** · **[Security](./SECURITY.md)** · **[npm](https://npmjs.com/package/@yesvara/svara)**
 
 </div>

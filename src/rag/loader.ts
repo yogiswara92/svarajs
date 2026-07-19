@@ -1,6 +1,6 @@
 /**
  * @module rag/loader
- * SvaraJS — Document loader
+ * SvaraJS - Document loader
  *
  * Loads documents from various sources into a normalized format.
  * Supported formats: TXT, MD, PDF, DOCX, HTML, JSON
@@ -41,7 +41,7 @@ class JsonFileLoader implements FileLoader {
     const raw = await fs.readFile(filePath, 'utf-8');
 
     if (path.extname(filePath) === '.jsonl') {
-      // JSON Lines — one JSON object per line
+      // JSON Lines - one JSON object per line
       return raw
         .split('\n')
         .filter(Boolean)
@@ -59,18 +59,22 @@ class JsonFileLoader implements FileLoader {
 
 // ─── HTML Loader ──────────────────────────────────────────────────────────────
 
+/** Strip HTML tags/scripts/styles down to plain text - simple regex, good enough for RAG and web_fetch. */
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 class HtmlFileLoader implements FileLoader {
   extensions = ['.html', '.htm'];
 
   async load(filePath: string): Promise<string> {
     const raw = await fs.readFile(filePath, 'utf-8');
-    // Strip HTML tags — simple regex, good enough for RAG
-    return raw
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return stripHtml(raw);
   }
 }
 

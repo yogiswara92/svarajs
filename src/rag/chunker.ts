@@ -1,6 +1,6 @@
 /**
  * @module rag/chunker
- * SvaraJS — Document chunking strategies
+ * SvaraJS - Document chunking strategies
  *
  * Breaks documents into retrieval-optimized chunks.
  * Strategy selection matters: fixed for code/data, sentence for prose, paragraph for docs.
@@ -98,7 +98,7 @@ export class Chunker {
 
   /**
    * Split by sentences, grouping them until size limit.
-   * Best for prose text — preserves natural reading units.
+   * Best for prose text - preserves natural reading units.
    */
   private sentenceChunk(text: string): string[] {
     const sentences = this.splitSentences(text);

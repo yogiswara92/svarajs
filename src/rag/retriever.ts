@@ -1,6 +1,6 @@
 /**
  * @module rag/retriever
- * SvaraJS — Vector retrieval for RAG
+ * SvaraJS - Vector retrieval for RAG
  *
  * Embeds document chunks and performs similarity search.
  * Uses in-memory vector store by default (great for dev),
@@ -14,7 +14,7 @@
  * const context = await retriever.retrieve('What is the refund policy?');
  */
 
-import type { RAGConfig, DocumentChunk, RetrievedContext } from '../core/types.js';
+import type { RAGConfig, DocumentChunk, RetrievedContext, KnowledgeDocument } from '../core/types.js';
 import type { RAGRetriever } from '../core/agent.js';
 import { DocumentLoader } from './loader.js';
 import { Chunker } from './chunker.js';
@@ -34,12 +34,12 @@ class OpenAIEmbeddings implements EmbeddingProvider {
   private client: unknown;
   private model: string;
 
-  constructor(apiKey?: string, model = 'text-embedding-3-small') {
-    this.model = model;
+  constructor(opts: { apiKey?: string; model?: string; baseURL?: string } = {}) {
+    this.model = opts.model || 'text-embedding-3-small';
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { default: OpenAI } = require('openai');
-      this.client = new OpenAI({ apiKey: apiKey ?? process.env.OPENAI_API_KEY });
+      this.client = new OpenAI({ apiKey: opts.apiKey ?? process.env.OPENAI_API_KEY, baseURL: opts.baseURL });
     } catch {
       throw new Error('[SvaraJS] OpenAI embeddings require the "openai" package.');
     }
@@ -112,6 +112,8 @@ abstract class VectorStore {
   abstract search(queryEmbedding: number[], topK: number, threshold?: number): Promise<DocumentChunk[]>;
   abstract searchWithScores(queryEmbedding: number[], topK: number, threshold?: number): Promise<Array<{ chunk: DocumentChunk; score: number }>>;
   abstract size(): Promise<number>;
+  abstract listDocuments(): Promise<KnowledgeDocument[]>;
+  abstract removeDocument(documentId: string): Promise<void>;
   protected contentHash(content: string): string {
     return crypto.createHash('md5').update(content).digest('hex');
   }
@@ -242,6 +244,22 @@ class PersistentVectorStore extends VectorStore {
     }>;
     return result[0]?.count ?? 0;
   }
+
+  async listDocuments(): Promise<KnowledgeDocument[]> {
+    const rows = this.db.query(
+      `SELECT document_id, source, COUNT(*) as chunk_count FROM svara_chunks
+       WHERE agent_name = ? GROUP BY document_id, source ORDER BY MAX(id) DESC`,
+      [this.agentName]
+    ) as Array<{ document_id: string; source: string; chunk_count: number }>;
+    return rows.map((r) => ({ documentId: r.document_id, source: r.source, chunkCount: r.chunk_count }));
+  }
+
+  async removeDocument(documentId: string): Promise<void> {
+    this.db.run(
+      'DELETE FROM svara_chunks WHERE agent_name = ? AND document_id = ?',
+      [this.agentName, documentId]
+    );
+  }
 }
 
 // ─── VectorRetriever ─────────────────────────────────────────────────────────
@@ -281,10 +299,10 @@ export class VectorRetriever implements RAGRetriever {
     const emb = config.embeddings ?? { provider: 'openai' };
     switch (emb.provider) {
       case 'openai':
-        this.embedder = new OpenAIEmbeddings(emb.apiKey, emb.model);
+        this.embedder = new OpenAIEmbeddings({ apiKey: emb.apiKey, model: emb.model, baseURL: emb.baseURL });
         break;
       case 'ollama':
-        this.embedder = new OllamaEmbeddings(emb.model);
+        this.embedder = new OllamaEmbeddings(emb.model, emb.baseURL);
         break;
       default:
         throw new Error(`[SvaraJS] Unknown embeddings provider: "${emb.provider}"`);
@@ -338,6 +356,14 @@ export class VectorRetriever implements RAGRetriever {
       query,
       totalFound: chunksWithScores.length,
     };
+  }
+
+  async listDocuments(): Promise<KnowledgeDocument[]> {
+    return this.store.listDocuments();
+  }
+
+  async removeDocument(documentId: string): Promise<void> {
+    return this.store.removeDocument(documentId);
   }
 }
 

@@ -44,7 +44,7 @@ const calculate = createTool({
     },
   },
   async run({ expression }) {
-    // Very simple safe eval — in production use a proper math library
+    // Very simple safe eval - in production use a proper math library
     const result = Function(`"use strict"; return (${expression as string})`)() as number;
     return { expression, result };
   },

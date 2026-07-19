@@ -9,14 +9,14 @@
  * - Can call functions you define (tools)
  * - Can receive messages from any channel (WhatsApp, Telegram, Web, etc.)
  *
- * @example Minimal — works in 5 lines
+ * @example Minimal - works in 5 lines
  * ```ts
  * const agent = new SvaraAgent({ name: 'Aria', model: 'gpt-4o' });
  * const reply = await agent.chat('What is the capital of France?');
  * console.log(reply); // "Paris"
  * ```
  *
- * @example Full — production-ready bot
+ * @example Full - production-ready bot
  * ```ts
  * const agent = new SvaraAgent({
  *   name: 'Support Bot',
@@ -36,7 +36,7 @@
  */
 
 import EventEmitter from 'events';
-import type { RequestHandler } from 'express';
+import type { RequestHandler, Express } from 'express';
 import { createAdapter, resolveConfig, type LLMAdapter } from './llm.js';
 import type {
   LLMConfig,
@@ -49,12 +49,24 @@ import type {
   ChannelName,
   TokenUsage,
   RAGRetriever,
+  KnowledgeDocument,
+  Attachment,
+  RAGConfig,
 } from './types.js';
 import { ConversationMemory } from '../memory/conversation.js';
 import { ContextBuilder } from '../memory/context.js';
+import { ContextCompressor } from '../memory/compressor.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { SkillRegistry } from '../skills/registry.js';
+import { createSkillTools } from '../skills/tools.js';
+import { createSkillHubTool } from '../skills/hub.js';
+import { LearningMemory } from '../memory/learningFiles.js';
+import { createMemoryTool } from '../memory/learningTools.js';
+import { createSessionSearchTool } from '../memory/sessionSearchTool.js';
+import { BackgroundReview } from '../memory/backgroundReview.js';
 import { SvaraDB } from '../database/sqlite.js';
 import { ToolExecutor } from '../tools/executor.js';
+import { drainPendingTokens, getRegisteredFile } from '../tools/builtin/sendFile.js';
 import type { Tool } from '../types.js';
 
 // ─── Channel Interface (implemented in channels/) ─────────────────────────────
@@ -62,7 +74,7 @@ import type { Tool } from '../types.js';
 export interface SvaraChannel {
   readonly name: ChannelName;
   mount(agent: SvaraAgent): Promise<void>;
-  send(sessionId: string, text: string): Promise<void>;
+  send(sessionId: string, text: string, attachments?: Attachment[]): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -85,10 +97,10 @@ export interface AgentConfig {
   /**
    * LLM model to use. Provider is auto-detected from the name.
    *
-   * @example 'gpt-4o'             — OpenAI (needs OPENAI_API_KEY)
-   * @example 'claude-opus-4-6'   — Anthropic (needs ANTHROPIC_API_KEY)
-   * @example 'llama3'             — Ollama (local, needs Ollama running)
-   * @example 'gpt-4o-mini'        — OpenAI (cheaper, faster)
+   * @example 'gpt-4o'             - OpenAI (needs OPENAI_API_KEY)
+   * @example 'claude-opus-4-6'   - Anthropic (needs ANTHROPIC_API_KEY)
+   * @example 'llama3'             - Ollama (local, needs Ollama running)
+   * @example 'gpt-4o-mini'        - OpenAI (cheaper, faster)
    */
   model: string;
 
@@ -108,14 +120,24 @@ export interface AgentConfig {
   knowledge?: string | string[];
 
   /**
+   * Embedding provider used to index `knowledge` documents and RAG uploads.
+   * Separate from `llm`/`model` above - an OpenAI-compatible chat endpoint
+   * (OpenRouter, etc.) doesn't necessarily also serve embeddings, so this
+   * needs its own provider/key. `provider: 'ollama'` needs no API key at
+   * all (a local Ollama server, model `nomic-embed-text` by default).
+   * @default { provider: 'openai' } - needs OPENAI_API_KEY or `apiKey` here
+   */
+  embeddings?: RAGConfig['embeddings'];
+
+  /**
    * Conversation memory configuration.
-   * - `true` — enable with defaults (20 message window)
-   * - `false` — disable (stateless, every call is fresh)
-   * - object — custom configuration
+   * - `true` - enable with defaults (20 message window, persisted to SQLite)
+   * - `false` - disable (stateless, every call is fresh)
+   * - object - custom configuration
    *
    * @default true
    */
-  memory?: boolean | { window?: number };
+  memory?: boolean | { window?: number; persist?: boolean };
 
   /**
    * Tools (function calls) the agent can use.
@@ -124,7 +146,7 @@ export interface AgentConfig {
   tools?: Tool[];
 
   /**
-   * LLM temperature — controls creativity vs. precision.
+   * LLM temperature - controls creativity vs. precision.
    * 0 = deterministic, 2 = very creative. Default: 0.7
    */
   temperature?: number;
@@ -142,9 +164,75 @@ export interface AgentConfig {
 
   /**
    * Advanced: override LLM provider or add custom endpoint.
-   * Usually not needed — `model` auto-detects the provider.
+   * Usually not needed - `model` auto-detects the provider.
    */
   llm?: Partial<LLMConfig>;
+
+  /**
+   * Token budget for a session's message history. Once history crosses
+   * ~75% of this, older turns are summarized (context compaction) instead
+   * of being sent verbatim. @default 8000
+   */
+  contextWindow?: number;
+
+  /**
+   * Cheaper/faster model used for context-compaction summaries (and, later,
+   * skill/memory background review). Falls back to the main `model` if omitted.
+   *
+   * @example 'gpt-4o-mini'
+   */
+  auxiliaryModel?: string;
+
+  /**
+   * Directory of skills (`<id>/SKILL.md`) this agent can discover, read, and
+   * - via the `skill_manage` tool - create/edit/delete for itself. Omit to
+   * disable the skill system entirely (default).
+   *
+   * @example './skills'
+   */
+  skillsDir?: string;
+
+  /**
+   * Content guard for agent-created skills (skills the agent writes itself
+   * via `skill_manage`, as opposed to ones already on disk). When set, skill
+   * content matching a dangerous pattern (destructive/exfiltration) routes
+   * through `onDangerousContent` instead of writing silently - return
+   * `false` to block. Omit to leave agent-created skills unguarded (default).
+   */
+  skillsGuard?: {
+    onDangerousContent?: (skillId: string, findings: Array<{ category: string; description: string }>) => Promise<boolean>;
+  };
+
+  /**
+   * Registers the `skill_install` tool, letting the agent install a skill
+   * from a public GitHub repo (`owner/repo[@ref][/path]` or a raw SKILL.md
+   * URL). Hub-installed skills go through the strictest guard tier -
+   * `onApprovalNeeded` decides caution/dangerous content; omit it to always
+   * decline. Requires `skillsDir`. @default false (not registered)
+   */
+  skillsHub?: {
+    onApprovalNeeded?: (skillId: string, verdict: 'ask' | 'block', findings: Array<{ category: string; description: string }>) => Promise<boolean>;
+  };
+
+  /**
+   * Persistent "learning" memory - MEMORY.md (agent's own notes) and USER.md
+   * (what it's learned about the user), injected into the system prompt.
+   * - `true` - enable with defaults (`./memory`)
+   * - object - custom directory
+   * @default false
+   */
+  learningMemory?: boolean | { dir?: string };
+
+  /**
+   * After each turn, silently replay the exchange through the model (using
+   * `auxiliaryModel` if set, otherwise the main model) with only the
+   * `memory`/`skill_manage` tools available, letting it decide on its own
+   * whether anything is worth remembering - no explicit "remember this"
+   * needed from the user. Runs after the response is already sent, never
+   * blocks or fails a turn. Requires `learningMemory` and/or `skillsDir` to
+   * be configured (nothing to review otherwise). @default false
+   */
+  backgroundReview?: boolean;
 
   /**
    * Print detailed logs of every LLM call, tool execution, and memory operation.
@@ -165,19 +253,31 @@ export class SvaraAgent extends EventEmitter {
   private readonly executor: ToolExecutor;
   private readonly memory: ConversationMemory;
   private readonly context: ContextBuilder;
+  private readonly compressor: ContextCompressor;
   private readonly maxIterations: number;
   private readonly verbose: boolean;
+  private readonly persistMemory: boolean;
 
+  private readonly skillRegistry: SkillRegistry | null = null;
+  private readonly learningMemory: LearningMemory | null = null;
+  private readonly backgroundReview: BackgroundReview | null = null;
+  private childCounter = 0;
   private channels: Map<ChannelName, SvaraChannel> = new Map();
   private knowledgeBase: KnowledgeBase | null = null;
   private retriever: any = null; // Store VectorRetriever for retrieveChunks access
   private knowledgePaths: string[] = [];
+  private readonly embeddingsConfig: RAGConfig['embeddings'];
   private isStarted = false;
   private isKnowledgeInitialized = false;
   private db: SvaraDB;
 
   constructor(config: AgentConfig) {
     super();
+    // Each concurrent streaming chat request (dashboard's /api/chat/stream)
+    // adds a temporary 'tool:call' listener for its duration - the default
+    // cap of 10 would print noisy MaxListenersExceededWarnings well within
+    // normal multi-tab/multi-session usage.
+    this.setMaxListeners(50);
 
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
@@ -199,13 +299,59 @@ export class SvaraAgent extends EventEmitter {
     const memCfg = config.memory ?? true;
     const window = memCfg === false ? 0 : (typeof memCfg === 'object' ? (memCfg.window ?? 20) : 20);
     this.memory = new ConversationMemory({ type: 'conversation', maxMessages: window });
+    this.persistMemory = memCfg !== false && (typeof memCfg === 'object' ? (memCfg.persist ?? true) : true);
 
     this.context = new ContextBuilder(this.llm);
+
+    const auxAdapter = config.auxiliaryModel
+      ? createAdapter(resolveConfig(config.auxiliaryModel))
+      : undefined;
+    this.compressor = new ContextCompressor(this.llm, auxAdapter, { contextWindow: config.contextWindow });
+
     this.tools = new ToolRegistry();
     this.executor = new ToolExecutor(this.tools);
 
+    // Full-text search across all persisted sessions - only meaningful once messages are actually persisted.
+    if (this.persistMemory) {
+      this.addTool(createSessionSearchTool(this.db));
+    }
+
     // Register initial tools
     config.tools?.forEach((t) => this.addTool(t));
+
+    // Skill system - opt-in via skillsDir
+    if (config.skillsDir) {
+      this.skillRegistry = new SkillRegistry({ skillsDir: config.skillsDir });
+      createSkillTools(this.skillRegistry, {
+        guardAgentCreated: !!config.skillsGuard,
+        onDangerousContent: config.skillsGuard?.onDangerousContent,
+      }).forEach((t) => this.addTool(t));
+
+      if (config.skillsHub) {
+        this.addTool(createSkillHubTool(this.skillRegistry, {
+          onApprovalNeeded: config.skillsHub.onApprovalNeeded,
+        }));
+      }
+    }
+
+    // Learning memory (MEMORY.md/USER.md) - opt-in via learningMemory
+    if (config.learningMemory) {
+      const dir = typeof config.learningMemory === 'object' ? config.learningMemory.dir : undefined;
+      this.learningMemory = new LearningMemory({ dir });
+      this.addTool(createMemoryTool(this.learningMemory));
+    }
+
+    // Background review - opt-in, needs something to review into
+    if (config.backgroundReview && (this.skillRegistry || this.learningMemory)) {
+      this.backgroundReview = new BackgroundReview({
+        adapter: auxAdapter ?? this.llm,
+        memory: this.learningMemory,
+        skillRegistry: this.skillRegistry,
+        skillsGuard: config.skillsGuard
+          ? { guardAgentCreated: true, onDangerousContent: config.skillsGuard.onDangerousContent }
+          : undefined,
+      });
+    }
 
     // Store knowledge paths for lazy initialization
     if (config.knowledge) {
@@ -213,9 +359,68 @@ export class SvaraAgent extends EventEmitter {
         ? config.knowledge
         : [config.knowledge];
     }
+
+    this.embeddingsConfig = config.embeddings ?? { provider: 'openai' };
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
+
+  /**
+   * Tools currently registered on this agent. Used for introspection -
+   * delegation (to build a child's toolset) and dashboards.
+   */
+  getTools(): Tool[] {
+    return this.tools.getAll().map((t) => ({
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+      run: t.run,
+      category: t.category,
+      timeout: t.timeout,
+    }));
+  }
+
+  /** The skill registry, if `skillsDir` was configured. Used by dashboards/tooling - null if skills are disabled. */
+  getSkillRegistry(): SkillRegistry | null {
+    return this.skillRegistry;
+  }
+
+  /** The learning-memory store, if `learningMemory` was configured. Used by dashboards/tooling - null if disabled. */
+  getLearningMemory(): LearningMemory | null {
+    return this.learningMemory;
+  }
+
+  /** Names of currently-connected channels. */
+  getChannelNames(): ChannelName[] {
+    return [...this.channels.keys()];
+  }
+
+  /** The connected channel instance by name (e.g. to push a cron job's result to it directly) - undefined if that channel isn't connected. */
+  getChannel(name: ChannelName): SvaraChannel | undefined {
+    return this.channels.get(name);
+  }
+
+  /**
+   * Create a new, independent SvaraAgent that inherits this agent's LLM
+   * provider/model by default - a fresh conversation, no shared state.
+   * Used by `delegate_task` (see src/delegation/) to spawn sub-agents; also
+   * useful directly for manual multi-agent orchestration.
+   *
+   * @example
+   * const child = agent.spawnChild({ tools: agent.getTools().filter(t => t.name !== 'delegate_task') });
+   * const result = await child.process('Summarize this document...');
+   */
+  spawnChild(overrides: Partial<AgentConfig> = {}): SvaraAgent {
+    this.childCounter++;
+    return new SvaraAgent({
+      name: `${this.name}-sub-${this.childCounter}`,
+      model: this.llmConfig.model,
+      llm: this.llmConfig,
+      maxIterations: this.maxIterations,
+      memory: false,
+      ...overrides,
+    });
+  }
 
   /**
    * Send a message and get a reply. The simplest way to use an agent.
@@ -226,7 +431,7 @@ export class SvaraAgent extends EventEmitter {
    *
    * @param message  The user's message.
    * @param sessionId  Optional session ID for multi-turn conversations.
-   *                   Defaults to 'default' — all calls share one history.
+   *                   Defaults to 'default' - all calls share one history.
    */
   async chat(message: string, sessionId = 'default'): Promise<string> {
     const result = await this.run(message, { sessionId });
@@ -275,6 +480,16 @@ export class SvaraAgent extends EventEmitter {
   }
 
   /**
+   * Remove a previously-added tool by name. No-op if it isn't registered -
+   * used by MCP disconnects and other dynamic tool sources that need to
+   * clean up after themselves.
+   */
+  removeTool(name: string): this {
+    this.tools.unregister(name);
+    return this;
+  }
+
+  /**
    * Connect a messaging channel. The agent will receive and respond to
    * messages from this channel automatically.
    *
@@ -290,6 +505,24 @@ export class SvaraAgent extends EventEmitter {
     const channel = this.loadChannel(name, config);
     this.channels.set(name, channel);
     return this;
+  }
+
+  /**
+   * Registers an already-running Express app as this agent's 'web' channel,
+   * so webhook-based channels (WhatsApp, Slack) that expect to mount their
+   * routes onto `channels.get('web').app` find one - without spinning up a
+   * second HTTP server the way `connectChannel('web', { port })` would.
+   * Used by the standalone runtime, which owns its own SvaraApp/Express
+   * instance and server lifecycle. Call before connecting webhook channels.
+   */
+  attachWebApp(app: Express): void {
+    this.channels.set('web', {
+      name: 'web',
+      mount: async () => {},
+      send: async () => {},
+      stop: async () => {},
+      app,
+    } as unknown as SvaraChannel);
   }
 
   /**
@@ -405,6 +638,19 @@ export class SvaraAgent extends EventEmitter {
    */
   async clearHistory(sessionId: string): Promise<void> {
     await this.memory.clear(sessionId);
+    if (this.persistMemory) {
+      this.db.clearSession(sessionId);
+    }
+  }
+
+  /** Recently active sessions (most recent first), each with a preview of its last message. Empty if persistent memory is off. */
+  listSessions(limit = 20): Array<{ sessionId: string; lastMessageAt: number; messageCount: number; preview: string }> {
+    return this.persistMemory ? this.db.listRecentSessions(limit) : [];
+  }
+
+  /** Full message history for one session, oldest first. Empty if persistent memory is off. */
+  getSessionMessages(sessionId: string, limit = 500): Array<{ id: string; role: string; content: string; metadata?: Record<string, unknown>; created_at: number }> {
+    return this.persistMemory ? this.db.getMessages(sessionId, limit) : [];
   }
 
   /**
@@ -420,6 +666,16 @@ export class SvaraAgent extends EventEmitter {
     } else {
       await this.knowledgeBase.load(arr);
     }
+  }
+
+  /** List indexed knowledge documents (one entry per source file, with its chunk count). Empty if RAG isn't initialized. */
+  async listKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
+    return (await this.retriever?.listDocuments?.()) ?? [];
+  }
+
+  /** Remove a knowledge document (and all its chunks) by the id returned from listKnowledgeDocuments(). */
+  async removeKnowledgeDocument(documentId: string): Promise<void> {
+    await this.retriever?.removeDocument?.(documentId);
   }
 
   // ─── Internal: User & Session Tracking ───────────────────────────────────────
@@ -478,7 +734,7 @@ export class SvaraAgent extends EventEmitter {
 
   /**
    * Receives a raw incoming message from a channel and processes it.
-   * Called by channel handlers — not typically used directly.
+   * Called by channel handlers - not typically used directly.
    */
   async receive(msg: IncomingMessage): Promise<AgentRunResult> {
     return this.run(msg.text, {
@@ -488,7 +744,6 @@ export class SvaraAgent extends EventEmitter {
   }
 
   private async run(message: string, options: AgentRunOptions): Promise<AgentRunResult> {
-    console.log(`\n[RUN START] kb=${!!this.knowledgeBase} ret=${!!this.retriever}`);
     const startTime = Date.now();
     const sessionId = options.sessionId ?? crypto.randomUUID();
     const userId = options.userId ?? 'unknown';
@@ -497,6 +752,19 @@ export class SvaraAgent extends EventEmitter {
     await this.trackUserAndSession(userId, sessionId);
 
     this.emit('message:received', { message, sessionId, userId });
+
+    // Hydrate in-process cache from SQLite on first touch of this session in this process
+    // (survives restarts - the in-memory Map alone would not).
+    if (this.persistMemory && !this.memory.hasSession(sessionId)) {
+      const stored = this.db.getMessages(sessionId, 200);
+      if (stored.length > 0) {
+        await this.memory.hydrate(sessionId, stored.map((m) => ({
+          role: m.role as LLMMessage['role'],
+          content: m.content,
+          toolCallId: m.tool_call_id ?? undefined,
+        })));
+      }
+    }
 
     // Build LLM message history
     const history = await this.memory.getHistory(sessionId);
@@ -508,28 +776,38 @@ export class SvaraAgent extends EventEmitter {
       ragContext = await this.knowledgeBase.retrieve(message);
       // Also retrieve chunks to get document metadata and scores
       try {
-        console.log(`[DEBUG] Calling retrieveChunks for query: "${message}"`);
         const context = await this.retriever.retrieveChunks(message, 3);
-        console.log(`[DEBUG] Retrieved ${context.chunks.length} chunks`);
         retrievedDocuments = context.chunks.map((item: any) => ({
           source: item.chunk?.source || 'unknown',
           score: Math.round(item.score * 100) / 100,
           excerpt: item.chunk?.content?.substring(0, 150) || '',
         }));
-        console.log(`[DEBUG] Mapped ${retrievedDocuments.length} documents`);
       } catch (e) {
-        console.error(`[ERROR] RAG retrieval failed:`, e);
+        this.log('error', `RAG retrieval failed: ${(e as Error).message}`);
       }
-    } else {
-      console.log(`[DEBUG] No knowledgeBase (${!!this.knowledgeBase}) or retriever (${!!this.retriever})`);
     }
 
-    const messages = this.context.buildMessages(
-      this.systemPrompt,
+    let systemPrompt = this.systemPrompt;
+    if (this.learningMemory) {
+      const { agent: agentNotes, user: userNotes } = await this.learningMemory.load();
+      if (agentNotes) systemPrompt += `\n\n--- Your notes (MEMORY.md) ---\n${agentNotes}`;
+      if (userNotes) systemPrompt += `\n\n--- What you know about this user (USER.md) ---\n${userNotes}`;
+    }
+    if (this.skillRegistry) {
+      const skills = await this.skillRegistry.list();
+      if (skills.length > 0) {
+        systemPrompt += '\n\nAvailable skills (call skill_view with an id for full instructions):\n'
+          + skills.map((s) => `- ${s.id}: ${s.description}`).join('\n');
+      }
+    }
+
+    let messages = this.context.buildMessages(
+      systemPrompt,
       history,
       message,
       ragContext
     );
+    messages = await this.compressor.maybeCompress(messages);
 
     const internalCtx: InternalAgentContext = {
       sessionId,
@@ -556,7 +834,7 @@ export class SvaraAgent extends EventEmitter {
       totalUsage.completionTokens += llmResponse.usage.completionTokens;
       totalUsage.totalTokens += llmResponse.usage.totalTokens;
 
-      // No tool calls — agent has a final answer
+      // No tool calls - agent has a final answer
       if (!llmResponse.toolCalls?.length) {
         finalResponse = llmResponse.content;
         messages.push({ role: 'assistant', content: finalResponse });
@@ -599,11 +877,42 @@ export class SvaraAgent extends EventEmitter {
       finalResponse = `I've reached the reasoning limit for this request. Please try a simpler question.`;
     }
 
-    // Persist to memory
+    // Any files the send_file tool queued this turn - resolved to their
+    // registry record now, once, so both the returned result and the
+    // persisted metadata use the exact same list.
+    const attachments: Attachment[] = [];
+    for (const token of drainPendingTokens(sessionId)) {
+      const file = getRegisteredFile(token);
+      if (!file) continue;
+      const attachment: Attachment = { token, filename: file.filename, size: file.size, url: `/api/files/${token}` };
+      if (file.mimeType) attachment.mimeType = file.mimeType;
+      attachments.push(attachment);
+    }
+
+    // Persist to memory (in-process cache, always) and SQLite (survives restarts)
     await this.memory.append(sessionId, [
       { role: 'user', content: message },
       { role: 'assistant', content: finalResponse },
     ]);
+    if (this.persistMemory) {
+      const dedupedToolsUsed = [...new Set(toolsUsed)];
+      const assistantMetadata: Record<string, unknown> = {};
+      if (dedupedToolsUsed.length > 0) {
+        assistantMetadata.toolsUsed = dedupedToolsUsed;
+        assistantMetadata.iterations = iterations;
+      }
+      if (retrievedDocuments.length > 0) assistantMetadata.retrievedDocuments = retrievedDocuments;
+      if (attachments.length > 0) assistantMetadata.attachments = attachments;
+
+      this.db.saveMessage({ id: crypto.randomUUID(), sessionId, role: 'user', content: message });
+      this.db.saveMessage({
+        id: crypto.randomUUID(),
+        sessionId,
+        role: 'assistant',
+        content: finalResponse,
+        metadata: Object.keys(assistantMetadata).length > 0 ? assistantMetadata : undefined,
+      });
+    }
 
     const result: AgentRunResult = {
       response: finalResponse,
@@ -612,10 +921,15 @@ export class SvaraAgent extends EventEmitter {
       iterations,
       usage: totalUsage,
       duration: Date.now() - startTime,
+      attachments: attachments.length > 0 ? attachments : undefined,
       retrievedDocuments: retrievedDocuments.length > 0 ? retrievedDocuments : undefined,
     };
 
     this.emit('message:sent', { response: finalResponse, sessionId });
+
+    // Fire-and-forget - runs after the response is already on its way back, never blocks a turn.
+    this.backgroundReview?.reviewAsync({ sessionId, userMessage: message, assistantResponse: finalResponse });
+
     return result;
   }
 
@@ -628,7 +942,7 @@ export class SvaraAgent extends EventEmitter {
 
       // Create retriever with agent name for isolated RAG per agent
       this.retriever = new VectorRetriever(this.name, this.db);
-      await this.retriever.init({ embeddings: { provider: 'openai' } });
+      await this.retriever.init({ embeddings: this.embeddingsConfig });
 
       const files: string[] = [];
       for (const pattern of paths) {
@@ -676,6 +990,16 @@ export class SvaraAgent extends EventEmitter {
           // eslint-disable-next-line @typescript-eslint/no-require-imports
           const { WhatsAppChannel } = require('../channels/whatsapp.js') as { WhatsAppChannel: new (c: unknown) => SvaraChannel };
           return new WhatsAppChannel(config);
+        }
+        case 'slack': {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { SlackChannel } = require('../channels/slack.js') as { SlackChannel: new (c: unknown) => SvaraChannel };
+          return new SlackChannel(config);
+        }
+        case 'discord': {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { DiscordChannel } = require('../channels/discord.js') as { DiscordChannel: new (c: unknown) => SvaraChannel };
+          return new DiscordChannel(config);
         }
         default:
           throw new Error(`Unknown channel: "${name as string}"`);

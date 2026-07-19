@@ -1,19 +1,27 @@
 {
   "name": "@yesvara/svara",
-  "version": "0.2.9",
-  "description": "Build AI agents in 15 lines of code. Multi-channel, RAG-ready, production-grade.",
+  "version": "1.0.2",
+  "description": "Build AI agents in less than 9 lines of code, or run one as a full standalone assistant — terminal, browser, skills, memory, cron, and a dashboard, included. Multi-channel, RAG-ready, production-grade.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "bin": {
     "svara": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "dashboard/dist",
+    "examples",
+    "SECURITY.md",
+    "CONTRIBUTING.md"
+  ],
   "scripts": {
     "build": "tsup src/index.ts src/cli/index.ts --format cjs,esm --dts --clean",
+    "build:dashboard": "cd dashboard && npm install && npm run build",
     "dev": "tsup src/index.ts --watch --format cjs",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build && npm run typecheck"
+    "prepublishOnly": "npm run build && npm run build:dashboard && npm run typecheck"
   },
   "exports": {
     ".": {
@@ -32,8 +40,17 @@
     "chatbot",
     "whatsapp",
     "telegram",
+    "slack",
+    "discord",
     "framework",
-    "agentic"
+    "agentic",
+    "terminal",
+    "browser-automation",
+    "playwright",
+    "skills",
+    "cron",
+    "assistant",
+    "dashboard"
   ],
   "author": "Yesvara Contributors",
   "license": "MIT",
@@ -47,36 +64,49 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": ">=0.20.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.8.0",
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.18.2",
     "glob": "^10.4.1",
+    "gpt-tokenizer": "^3.4.0",
+    "gray-matter": "^4.0.3",
     "inquirer": "^9.3.2",
     "mammoth": "^1.7.2",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
     "openai": "^6.34.0",
     "ora": "^8.0.1",
     "pdf-parse": "^1.1.1",
+    "ws": "^8.21.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.10",
     "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.13",
     "@types/node": "^20.14.2",
     "@types/pdf-parse": "^1.1.4",
+    "@types/ws": "^8.18.1",
+    "playwright": "^1.48.0",
     "tsup": "^8.1.0",
     "typescript": "^5.4.5",
     "vitest": "^1.6.0"
   },
   "peerDependencies": {
-    "@anthropic-ai/sdk": ">=0.20.0"
+    "@anthropic-ai/sdk": ">=0.20.0",
+    "playwright": ">=1.40.0"
   },
   "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
     "openai": {
       "optional": true
     },
-    "@anthropic-ai/sdk": {
+    "playwright": {
       "optional": true
     }
   },

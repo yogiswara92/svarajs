@@ -1,6 +1,6 @@
 /**
  * @module cli/commands/db
- * SvaraJS — Database inspection commands
+ * SvaraJS - Database inspection commands
  *
  * Usage:
  *   svara db:list-chunks [--agent <name>]

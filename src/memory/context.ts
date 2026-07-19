@@ -17,7 +17,7 @@ export class ContextBuilder {
   ): LLMMessage[] {
     const messages: LLMMessage[] = [
       { role: 'system', content: systemPrompt },
-      // Exclude any system messages from history — we prepend our own
+      // Exclude any system messages from history - we prepend our own
       ...history.filter((m) => m.role !== 'system'),
     ];
 
@@ -37,7 +37,7 @@ export class ContextBuilder {
   private augmentWithRAG(message: string, context: string): string {
     return [
       'Use the following context to answer the question.',
-      "If the answer isn't in the context, say so honestly — don't guess.",
+      "If the answer isn't in the context, say so honestly - don't guess.",
       '',
       '--- Context ---',
       context,
