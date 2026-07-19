@@ -1,6 +1,6 @@
 {
   "name": "@yesvara/svara",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Build AI agents in less than 9 lines of code, or run one as a full standalone assistant — terminal, browser, skills, memory, cron, and a dashboard, included. Multi-channel, RAG-ready, production-grade.",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
