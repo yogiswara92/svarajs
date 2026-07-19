@@ -4,6 +4,7 @@
   import Sidebar from './components/Sidebar.svelte';
   import AuthModal from './components/AuthModal.svelte';
   import Overview from './routes/Overview.svelte';
+  import Agents from './routes/Agents.svelte';
   import Chat from './routes/Chat.svelte';
   import Tools from './routes/Tools.svelte';
   import Skills from './routes/Skills.svelte';
@@ -18,7 +19,7 @@
   import SettingsApi from './routes/settings/Api.svelte';
 
   const KNOWN_PAGES = new Set([
-    'overview', 'chat', 'tools', 'skills', 'knowledge', 'mcp', 'memory', 'cron',
+    'overview', 'agents', 'chat', 'tools', 'skills', 'knowledge', 'mcp', 'memory', 'cron',
     'settings-general', 'settings-provider', 'settings-capabilities', 'settings-channels', 'settings-api',
   ]);
 
@@ -84,6 +85,8 @@
   <main class="content" class:full-bleed={page === 'chat'}>
     {#if page === 'overview'}
       <Overview />
+    {:else if page === 'agents'}
+      <Agents />
     {:else if page === 'chat'}
       <Chat />
     {:else if page === 'tools'}

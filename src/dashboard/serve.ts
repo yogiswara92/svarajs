@@ -107,6 +107,12 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   // Where uploaded knowledge documents get written - next to the config file
   // (or cwd if running without one) so they're easy to find and back up.
   const knowledgeDir = path.resolve(opts.configPath ? path.dirname(opts.configPath) : process.cwd(), 'knowledge-uploads');
+  // opts.configPath defaults to the relative 'svara.config.json' (see
+  // runtime/standalone.ts) - path.dirname() on that yields '.', not an
+  // absolute directory, so anything that needs a real parent directory (the
+  // Agents page's sibling-folder logic) must resolve it against cwd first,
+  // same as knowledgeDir above already (correctly) does via path.resolve().
+  const configDir = opts.configPath ? path.resolve(path.dirname(opts.configPath)) : undefined;
   const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 25 * 1024 * 1024 },
@@ -333,6 +339,46 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     // flushed to the client - restart() closes the very server sending it.
     res.once('finish', () => opts.restart!());
   });
+
+  // ── Sibling agents (Agents page) ───────────────────────────────────────
+  // Only meaningful for a real `svara start` invocation - there's no
+  // "sibling folder" concept without a config file's directory to anchor to.
+
+  let agentCreateInProgress = false;
+
+  api.get('/agents', asyncRoute(async (_req, res) => {
+    if (!configDir) { res.json({ agents: [] }); return; }
+    const { listSiblingAgents } = await import('./agents.js');
+    res.json({ agents: await listSiblingAgents(configDir) });
+  }));
+
+  api.post('/agents', express.json(), asyncRoute(async (req, res) => {
+    if (!configDir) { res.status(400).json({ error: 'Not available on this runtime.' }); return; }
+    if (agentCreateInProgress) { res.status(409).json({ error: 'Another agent is already being created - wait for it to finish.' }); return; }
+
+    const { name, model, provider } = req.body ?? {};
+    if (typeof name !== 'string' || !name) { res.status(400).json({ error: 'name is required.' }); return; }
+    const ALLOWED_PROVIDERS = ['openai', 'anthropic', 'ollama'] as const;
+    if (provider !== undefined && !ALLOWED_PROVIDERS.includes(provider)) {
+      res.status(400).json({ error: `provider must be one of: ${ALLOWED_PROVIDERS.join(', ')}` });
+      return;
+    }
+
+    agentCreateInProgress = true;
+    try {
+      const { createSiblingAgent } = await import('./agents.js');
+      const result = await createSiblingAgent(configDir, {
+        name,
+        model: typeof model === 'string' && model ? model : undefined,
+        provider,
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    } finally {
+      agentCreateInProgress = false;
+    }
+  }));
 
   api.get('/tools', (_req, res) => {
     res.json({ tools: opts.agent.getTools().map((t) => ({ name: t.name, description: t.description })) });

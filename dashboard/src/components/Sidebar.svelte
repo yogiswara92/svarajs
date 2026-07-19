@@ -11,6 +11,7 @@
 
   const items = [
     { key: 'overview', label: 'Overview', icon: 'home' },
+    { key: 'agents', label: 'Agents', icon: 'folder' },
     { key: 'chat', label: 'Chat', icon: 'message-circle' },
     { key: 'settings-general', label: 'General', icon: 'sliders' },
     { key: 'settings-provider', label: 'AI Provider', icon: 'cpu' },
