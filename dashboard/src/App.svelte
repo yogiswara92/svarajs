@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { api, ApiError } from './lib/api';
   import Sidebar from './components/Sidebar.svelte';
   import AuthModal from './components/AuthModal.svelte';
   import Overview from './routes/Overview.svelte';
@@ -24,6 +25,23 @@
   let page = 'overview';
   let param = '';
   let mobileNavOpen = false;
+  let agentName = '';
+
+  // Distinguishes browser tabs/sidebars when multiple standalone instances
+  // (each its own agent) are open side by side - without this every tab
+  // just says the generic "SvaraJS Dashboard".
+  async function loadAgentName() {
+    try {
+      const config = await api.get('/api/config');
+      agentName = config?.name || '';
+      if (agentName) document.title = `${agentName} · SvaraJS Dashboard`;
+    } catch (e) {
+      // Not logged in yet, or request failed - AuthModal/page-level loads
+      // already handle that; the tab/sidebar just stay generic until a
+      // page successfully loads config.
+      if (!(e instanceof ApiError)) throw e;
+    }
+  }
 
   function parseHash() {
     const raw = window.location.hash.replace(/^#\/?/, '');
@@ -42,6 +60,7 @@
     if (!window.location.hash) window.location.hash = '#/overview';
     parseHash();
     window.addEventListener('hashchange', onHashChange);
+    void loadAgentName();
   });
 
   onDestroy(() => {
@@ -61,7 +80,7 @@
   {#if mobileNavOpen}
     <div class="mobile-nav-backdrop" role="presentation" on:click={() => (mobileNavOpen = false)}></div>
   {/if}
-  <Sidebar {page} open={mobileNavOpen} />
+  <Sidebar {page} {agentName} open={mobileNavOpen} />
   <main class="content" class:full-bleed={page === 'chat'}>
     {#if page === 'overview'}
       <Overview />

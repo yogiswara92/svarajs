@@ -6,6 +6,8 @@
   export let page = 'overview';
   /** Off-canvas open state on narrow viewports - ignored above the mobile breakpoint (see CSS). */
   export let open = false;
+  /** Agent's configured name (from svara.config.json) - tells apart multiple standalone instances open in different tabs, which would otherwise all show the same generic branding. */
+  export let agentName = '';
 
   const items = [
     { key: 'overview', label: 'Overview', icon: 'home' },
@@ -28,6 +30,9 @@
   <div class="brand">
     <img src="{base}svarajs-logo.png" alt="SvaraJS" class="brand-logo brand-logo-light" />
     <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="brand-logo brand-logo-dark" />
+    {#if agentName}
+      <div class="agent-name" title={agentName}>{agentName}</div>
+    {/if}
   </div>
   <nav>
     {#each items as item (item.key)}
@@ -81,6 +86,16 @@
 
   .brand-logo-dark {
     display: none;
+  }
+
+  .agent-name {
+    margin-top: 0.6rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   @media (prefers-color-scheme: dark) {
