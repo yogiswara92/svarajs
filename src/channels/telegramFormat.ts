@@ -26,17 +26,19 @@ function parseTableRow(line: string): string[] {
   return line.trim().slice(1, -1).split('|').map((cell) => cell.trim());
 }
 
-/** Converts a GFM table into plain lines - `*label:* value` per row when there are exactly two columns (the common name/value shape), otherwise one `*header:* value` block per row. */
+/** Converts a GFM table into a monospace `pre` block with columns padded to equal width - Telegram has no native table syntax, but a fixed-width font is enough to read as an aligned grid. */
 function renderTable(headers: string[], rows: string[][]): string[] {
-  const out: string[] = [];
-  if (headers.length === 2) {
-    for (const row of rows) out.push(`*${row[0] ?? ''}:* ${row[1] ?? ''}`);
-    return out;
-  }
-  for (const row of rows) {
-    out.push(headers.map((h, i) => `*${h}:* ${row[i] ?? ''}`).join('\n'));
-    out.push('');
-  }
+  const widths = headers.map((h, i) =>
+    Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length))
+  );
+  const renderRow = (cells: string[]): string =>
+    cells.map((c, i) => (c ?? '').padEnd(widths[i])).join(' | ').trimEnd();
+
+  const out: string[] = ['```'];
+  out.push(renderRow(headers));
+  out.push(widths.map((w) => '-'.repeat(w)).join('-+-'));
+  for (const row of rows) out.push(renderRow(row));
+  out.push('```');
   return out;
 }
 

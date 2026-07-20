@@ -9,7 +9,7 @@
 
 export const SECRET_KEYS = new Set([
   'token', 'apiKey', 'verifyToken', 'searchApiKey', 'password', 'secret',
-  'botToken', 'signingSecret', 'refreshToken',
+  'botToken', 'signingSecret', 'refreshToken', 'googleApiKey',
 ]);
 
 /**

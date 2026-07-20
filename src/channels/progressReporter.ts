@@ -32,6 +32,8 @@ export interface ProgressReporter {
   hasUpdates(): boolean;
   /** Detaches the tool:call listener - always call this once the turn is done, success or not. */
   stop(): void;
+  /** Formatted "done" version of the trace, e.g. to finalize the in-progress placeholder into a permanent record instead of overwriting it with the reply. Call after stop(). */
+  summary(): string;
 }
 
 // Deliberately plain text, no markdown emphasis - tool names routinely
@@ -39,9 +41,10 @@ export interface ProgressReporter {
 // every platform here (Telegram's legacy Markdown especially) treats a bare
 // underscore as an emphasis marker, so wrapping this in _italics_ risks a
 // parse error on the edit call over something a status line doesn't need.
-function formatProgress(toolsUsed: string[]): string {
+function formatProgress(toolsUsed: string[], done: boolean): string {
   const lines = toolsUsed.map((t) => `• ${t}`);
-  return `Working... (${toolsUsed.length} step${toolsUsed.length !== 1 ? 's' : ''})\n${lines.join('\n')}`;
+  const label = done ? 'Done' : 'Working...';
+  return `${label} (${toolsUsed.length} step${toolsUsed.length !== 1 ? 's' : ''})\n${lines.join('\n')}`;
 }
 
 /** Starts listening for this session's tool:call events and pushes throttled progress updates via `onUpdate`. */
@@ -57,7 +60,7 @@ export function attachProgressReporter(opts: ProgressReporterOptions): ProgressR
     const now = Date.now();
     if (now - lastUpdateAt < throttleMs) return; // leading-edge only - the final reply always lands regardless, so a skipped mid-run frame isn't lost information, just not shown
     lastUpdateAt = now;
-    void opts.onUpdate(formatProgress(toolsUsed)).catch(() => {});
+    void opts.onUpdate(formatProgress(toolsUsed, false)).catch(() => {});
   };
 
   opts.agent.on('tool:call', onToolCall);
@@ -65,5 +68,6 @@ export function attachProgressReporter(opts: ProgressReporterOptions): ProgressR
   return {
     hasUpdates: () => toolsUsed.length > 0,
     stop: () => opts.agent.off('tool:call', onToolCall),
+    summary: () => formatProgress(toolsUsed, true),
   };
 }

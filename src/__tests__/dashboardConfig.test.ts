@@ -113,6 +113,15 @@ describe('mergeConfigUpdates', () => {
     expect(merged.tools).toEqual({ filesystem: false });
   });
 
+  it('merges web search provider options field-by-field, keeping a "[set]" key as the existing secret', () => {
+    const current = { tools: { web: { provider: 'tavily', searchApiKey: 'tvly-real-key' } } };
+    const updates = { tools: { web: { provider: 'google', searchApiKey: '[set]', googleApiKey: 'gk-new', googleSearchEngineId: 'cx1' } } };
+    const merged = mergeConfigUpdates(current, updates);
+    expect(merged.tools).toEqual({
+      web: { provider: 'google', searchApiKey: 'tvly-real-key', googleApiKey: 'gk-new', googleSearchEngineId: 'cx1' },
+    });
+  });
+
   it('merges llm overrides on top of existing ones instead of replacing the whole object', () => {
     const current = { llm: { provider: 'openai', baseURL: 'https://old.example' } };
     const updates = { llm: { baseURL: 'https://openrouter.ai/api/v1' } };

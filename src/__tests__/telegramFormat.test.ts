@@ -15,25 +15,36 @@ describe('toTelegramMarkdown', () => {
     expect(toTelegramMarkdown('~~old price~~ new price')).toBe('old price new price');
   });
 
-  it('converts a two-column table into one bold-label line per row', () => {
+  it('converts a two-column table into a padded monospace grid', () => {
     const table = [
       '| Paket | Harga |',
       '|---|---|',
       '| 1 Bulan | Rp 500.000 |',
       '| 6 Bulan | Rp 2.700.000 - Paling Populer |',
     ].join('\n');
-    expect(toTelegramMarkdown(table)).toBe(
-      '*1 Bulan:* Rp 500.000\n*6 Bulan:* Rp 2.700.000 - Paling Populer'
-    );
+    expect(toTelegramMarkdown(table)).toBe([
+      '```',
+      'Paket   | Harga',
+      '--------+------------------------------',
+      '1 Bulan | Rp 500.000',
+      '6 Bulan | Rp 2.700.000 - Paling Populer',
+      '```',
+    ].join('\n'));
   });
 
-  it('converts a wider table into one header:value block per row', () => {
+  it('converts a wider table into a padded monospace grid', () => {
     const table = [
       '| Model | Provider | Env key |',
       '|---|---|---|',
       '| gpt-4o | OpenAI | OPENAI_API_KEY |',
     ].join('\n');
-    expect(toTelegramMarkdown(table)).toBe('*Model:* gpt-4o\n*Provider:* OpenAI\n*Env key:* OPENAI_API_KEY\n');
+    expect(toTelegramMarkdown(table)).toBe([
+      '```',
+      'Model  | Provider | Env key',
+      '-------+----------+---------------',
+      'gpt-4o | OpenAI   | OPENAI_API_KEY',
+      '```',
+    ].join('\n'));
   });
 
   it('leaves plain text and non-table pipes untouched', () => {
@@ -53,9 +64,9 @@ describe('toTelegramMarkdown', () => {
     const result = toTelegramMarkdown(input);
     expect(result).toContain('*LIBRA Club*');
     expect(result).toContain('*3 Paket Langganan (full akses semua fitur):*');
-    expect(result).toContain('*1 Bulan:* Rp 500.000');
-    expect(result).toContain('*1 Tahun:* Rp 4.800.000 - Termurah/bulan');
-    expect(result).not.toContain('|');
+    expect(result).toContain('1 Bulan | Rp 500.000');
+    expect(result).toContain('1 Tahun | Rp 4.800.000 - Termurah/bulan');
+    expect(result).toContain('```');
     expect(result).not.toContain('##');
   });
 });

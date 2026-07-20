@@ -288,6 +288,15 @@ agent.addTool(...createWebTools({ searchApiKey: process.env.TAVILY_API_KEY })); 
 agent.addTool(...createBrowserTools()); // browser_navigate, browser_get_text, browser_click, browser_screenshot
 ```
 
+`web_search` picks a backend in this order: an explicit `provider`, else Tavily
+(`searchApiKey` / `TAVILY_API_KEY`), else Google Custom Search (`googleApiKey`
++ `googleSearchEngineId`, or `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_ENGINE_ID`),
+else a Playwright fallback that scrapes DuckDuckGo's results page - so search
+works with zero API keys as long as the optional `playwright` package is
+installed, though it's slower and can be blocked by network-level filtering
+or bot detection depending on where the agent runs. A real key is more
+reliable; the fallback exists so search isn't entirely unavailable without one.
+
 `terminal_exec` runs commands through an `ApprovalGate`: known-dangerous
 patterns (`rm -rf`, `sudo`, `mkfs`, fork bombs, ...) are blocked unless
 allowlisted or explicitly approved. For real isolation, run it against a

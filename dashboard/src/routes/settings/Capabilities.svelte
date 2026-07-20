@@ -10,7 +10,17 @@
   let saveError = '';
   let saved = false;
 
-  let form = { terminal: false, filesystem: false, web: false, browser: false, skillsDir: '', learningMemory: false, backgroundReview: false, maxIterations: '' };
+  let form = {
+    terminal: false, filesystem: false, web: false, browser: false,
+    webProvider: '', webSearchApiKey: '', webGoogleApiKey: '', webGoogleSearchEngineId: '',
+    skillsDir: '', learningMemory: false, backgroundReview: false, maxIterations: '',
+  };
+
+  const SEARCH_PROVIDERS = [
+    { value: '', label: 'Auto (Tavily if set, else Google, else Playwright fallback)' },
+    { value: 'tavily', label: 'Tavily' },
+    { value: 'google', label: 'Google Custom Search' },
+  ];
 
   // "Browser" only flips a config flag - the agent registers the tool either
   // way and would otherwise only discover "playwright" is missing mid-reply,
@@ -50,11 +60,16 @@
 
   function populateForm(config) {
     const learningMemory = config.learningMemory;
+    const webConfig = typeof config.tools?.web === 'object' && config.tools.web !== null ? config.tools.web : {};
     form = {
       terminal: !!config.tools?.terminal,
       filesystem: !!config.tools?.filesystem,
       web: !!config.tools?.web,
       browser: !!config.tools?.browser,
+      webProvider: webConfig.provider || '',
+      webSearchApiKey: webConfig.searchApiKey || '',
+      webGoogleApiKey: webConfig.googleApiKey || '',
+      webGoogleSearchEngineId: webConfig.googleSearchEngineId || '',
       skillsDir: config.skillsDir || '',
       learningMemory: learningMemory === true || (learningMemory && typeof learningMemory === 'object'),
       backgroundReview: !!config.backgroundReview,
@@ -85,11 +100,19 @@
     saveError = '';
     saved = false;
     try {
+      const webOptions = (form.webProvider || form.webSearchApiKey || form.webGoogleApiKey || form.webGoogleSearchEngineId)
+        ? {
+            provider: form.webProvider || undefined,
+            searchApiKey: form.webSearchApiKey || undefined,
+            googleApiKey: form.webGoogleApiKey || undefined,
+            googleSearchEngineId: form.webGoogleSearchEngineId || undefined,
+          }
+        : true;
       const payload = {
         tools: {
           terminal: form.terminal,
           filesystem: form.filesystem,
-          web: form.web,
+          web: form.web ? webOptions : false,
           browser: form.browser,
         },
         skillsDir: form.skillsDir || undefined,
@@ -137,6 +160,38 @@
             <span class="switch-track"></span>
           </span>
         </label>
+        {#if t.key === 'web' && form.web}
+          <div class="web-search-config">
+            <label class="form-field">
+              Search provider
+              <select bind:value={form.webProvider}>
+                {#each SEARCH_PROVIDERS as p}
+                  <option value={p.value}>{p.label}</option>
+                {/each}
+              </select>
+              <span class="hint">
+                With no key configured for either provider, web_search automatically falls back to scraping
+                DuckDuckGo with the Browser tool's Playwright instance - slower and less reliable, but needs
+                no API key at all.
+              </span>
+            </label>
+            <label class="form-field">
+              Tavily API key
+              <input type="password" bind:value={form.webSearchApiKey} placeholder="tvly-..." autocomplete="off" />
+              <span class="hint">Stored encrypted in <code>svara.config.json</code>. Get one at tavily.com.</span>
+            </label>
+            <label class="form-field">
+              Google API key
+              <input type="password" bind:value={form.webGoogleApiKey} placeholder="AIza..." autocomplete="off" />
+              <span class="hint">From a Google Cloud project with the "Custom Search API" enabled.</span>
+            </label>
+            <label class="form-field">
+              Google Search Engine ID (cx)
+              <input bind:value={form.webGoogleSearchEngineId} placeholder="a1b2c3d4e5f6g7h8i" />
+              <span class="hint">From a Programmable Search Engine configured to search the whole web.</span>
+            </label>
+          </div>
+        {/if}
         {#if t.key === 'browser' && form.browser && playwrightInstalled === false}
           <div class="playwright-warning">
             <p>
@@ -229,6 +284,27 @@
   .form-field input:focus {
     outline: none;
     border-color: var(--primary);
+  }
+  .form-field select {
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 400;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.6rem 0.75rem;
+  }
+
+  .web-search-config {
+    margin: -0.25rem 0 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
   }
 
   .playwright-warning {
