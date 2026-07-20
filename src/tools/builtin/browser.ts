@@ -32,15 +32,31 @@ let browserPromise: Promise<Browser> | null = null;
 let pagePromise: Promise<Page> | null = null;
 let refMap: Map<string, ElementHandle> = new Map();
 
-async function getPage(headless: boolean): Promise<Page> {
+async function getBrowserInstance(headless: boolean): Promise<Browser> {
   if (!browserPromise) {
     const { chromium } = await loadPlaywright();
     browserPromise = chromium.launch({ headless });
   }
+  return browserPromise;
+}
+
+async function getPage(headless: boolean): Promise<Page> {
+  const browser = await getBrowserInstance(headless);
   if (!pagePromise) {
-    pagePromise = browserPromise.then((b) => b.newPage());
+    pagePromise = browser.newPage();
   }
   return pagePromise;
+}
+
+/**
+ * The same lazily-launched Chromium instance browser_* tools share - exposed
+ * so another tool (e.g. web_search's Playwright fallback) can reuse the
+ * already-running process instead of launching a second one, while still
+ * opening its own `page` via `(await getSharedBrowser()).newPage()` rather
+ * than touching the interactive tools' current page/navigation state.
+ */
+export async function getSharedBrowser(headless = true): Promise<Browser> {
+  return getBrowserInstance(headless);
 }
 
 /** Close the shared browser instance, if one was launched. Call on agent/runtime shutdown. */

@@ -803,6 +803,10 @@ function mergeFieldsPreservingSetPlaceholder(current: Record<string, unknown>, u
   return merged;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function mergeConfigUpdates(current: Record<string, unknown>, updates: Record<string, unknown>): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...current, ...updates };
 
@@ -814,7 +818,22 @@ export function mergeConfigUpdates(current: Record<string, unknown>, updates: Re
       if (!(key in updateTools)) continue;
       const newVal = updateTools[key];
       const oldVal = currentTools[key];
-      mergedTools[key] = newVal === true && oldVal && typeof oldVal === 'object' ? oldVal : newVal;
+      if (newVal === true && oldVal && typeof oldVal === 'object') {
+        // Re-toggling on with a bare `true` (the Capabilities page's simple
+        // switch) - keep the richer object (e.g. web's searchApiKey) as-is.
+        mergedTools[key] = oldVal;
+      } else if (isPlainObject(newVal)) {
+        // A settings form submitting actual option fields (e.g. web's
+        // provider/searchApiKey/googleApiKey) - merge field-by-field so an
+        // untouched '[set]' secret round-trips onto the existing encrypted
+        // value instead of being written back as the literal placeholder.
+        mergedTools[key] = mergeFieldsPreservingSetPlaceholder(
+          isPlainObject(oldVal) ? oldVal : {},
+          newVal
+        );
+      } else {
+        mergedTools[key] = newVal;
+      }
     }
     merged.tools = mergedTools;
   }

@@ -630,6 +630,11 @@ export class SvaraAgent extends EventEmitter {
     this.emit('stopped');
   }
 
+  /** Model name currently in use (auto-detected provider). */
+  get model(): string {
+    return this.llmConfig.model;
+  }
+
   /**
    * Clear conversation history for a session.
    *
@@ -788,6 +793,10 @@ export class SvaraAgent extends EventEmitter {
     }
 
     let systemPrompt = this.systemPrompt;
+    systemPrompt += `\n\nCurrent date/time: ${new Date().toLocaleString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    })}`;
     if (this.learningMemory) {
       const { agent: agentNotes, user: userNotes } = await this.learningMemory.load();
       if (agentNotes) systemPrompt += `\n\n--- Your notes (MEMORY.md) ---\n${agentNotes}`;
