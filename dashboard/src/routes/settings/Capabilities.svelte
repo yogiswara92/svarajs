@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { api, ApiError } from '../../lib/api';
   import RestartBanner from '../../components/RestartBanner.svelte';
   import Icon from '../../components/Icon.svelte';
@@ -39,6 +39,34 @@
       // Non-critical - just leave the warning unshown rather than blocking the page.
     }
   }
+
+  // ── Node.js 20 for this agent (the browser tool needs it; many servers have Node 18) ──
+  let nodeInfo = null;
+  let nodeInstallError = '';
+  let nodePoll = null;
+
+  async function checkNode() {
+    try {
+      nodeInfo = await api.get('/api/runtime/node');
+      if (nodeInfo.install?.state === 'installing' && !nodePoll) nodePoll = setInterval(checkNode, 1500);
+      if (nodeInfo.install?.state !== 'installing' && nodePoll) { clearInterval(nodePoll); nodePoll = null; }
+    } catch {
+      // Non-critical
+    }
+  }
+
+  async function installNode() {
+    nodeInstallError = '';
+    try {
+      await api.post('/api/runtime/node/install');
+      await checkNode();
+      if (!nodePoll) nodePoll = setInterval(checkNode, 1500);
+    } catch (e) {
+      nodeInstallError = e instanceof ApiError ? e.message : 'Could not start the install.';
+    }
+  }
+
+  onDestroy(() => { if (nodePoll) clearInterval(nodePoll); });
 
   async function installPlaywright() {
     playwrightInstalling = true;
@@ -95,6 +123,7 @@
   onMount(() => {
     load();
     checkPlaywrightStatus();
+    checkNode();
   });
 
   async function save() {
@@ -197,6 +226,22 @@
         {#if t.key === 'browser' && form.browser && playwrightUnsupported}
           <div class="playwright-warning">
             <p><Icon name="alert-triangle" /> {playwrightUnsupported}</p>
+            {#if nodeInfo?.install?.state === 'done'}
+              <p class="success-text">{nodeInfo.install.message}</p>
+              <RestartBanner show={true} />
+            {:else if nodeInfo?.install?.state === 'installing'}
+              <p><span class="muted">{nodeInfo.install.message || 'Installing...'}</span></p>
+            {:else if nodeInfo?.canInstall}
+              <p>
+                You can add Node.js {nodeInfo.required} for this agent only: about 40 MB, no admin rights needed, and
+                nothing else on the server changes. Then restart the runtime.
+              </p>
+              {#if nodeInfo.install?.state === 'error'}<p class="error-text">{nodeInfo.install.message}</p>{/if}
+              {#if nodeInstallError}<p class="error-text">{nodeInstallError}</p>{/if}
+              <button type="button" class="btn secondary small" on:click={installNode}>Install Node.js {nodeInfo.required}</button>
+            {:else if nodeInfo && !nodeInfo.canInstall}
+              <p class="muted">Automatic install is not available here. Install Node.js {nodeInfo.required} or newer on the server and restart.</p>
+            {/if}
           </div>
         {:else if t.key === 'browser' && form.browser && playwrightInstalled === false}
           <div class="playwright-warning">

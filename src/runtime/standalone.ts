@@ -26,6 +26,7 @@ import { ApprovalQueue } from '../security/approvalQueue.js';
 import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig, type SvaraRuntimeConfig } from './config.js';
 import { mountDashboard } from '../dashboard/serve.js';
 import { SiblingSupervisor, resolveCliEntry } from '../dashboard/supervisor.js';
+import { RESTART_EXIT_CODE } from './nodeRuntime.js';
 import path from 'path';
 import { McpManager } from '../mcp/manager.js';
 import { SVARAMIND_SERVER_ID, refreshSvaramindConfig } from '../integrations/svaramind.js';
@@ -232,6 +233,12 @@ export async function startStandaloneRuntime(
   const restart = (): void => {
     console.log('[@yesvara/svara] Restarting...');
     void shutdown().then(() => {
+      // Something already supervises this process (systemd, pm2, the `svara start` Node wrapper, or the parent
+      // runtime for a sibling agent): just exit with a restart-worthy code and let it bring us back. Spawning our
+      // own detached copy here would race the supervisor's copy for the port.
+      if (process.env.INVOCATION_ID || process.env.pm_id || process.env.SVARA_REEXEC || process.env.SVARA_EMBEDDED_TOKEN) {
+        process.exit(RESTART_EXIT_CODE);
+      }
       const child = spawn(process.argv[0], process.argv.slice(1), {
         detached: true,
         stdio: 'inherit',

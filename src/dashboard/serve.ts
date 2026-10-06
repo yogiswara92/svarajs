@@ -42,6 +42,7 @@ import {
 import { mapSecretFields } from '../security/secretFields.js';
 import { validateWithinDir } from '../security/pathGuard.js';
 import { isPlaywrightInstalled, playwrightUnsupportedReason } from '../tools/lazyDeps.js';
+import { PRIVATE_NODE_MAJOR, envWithPrivateNode, installNodeAndRebuild, nodeMajor, platformSlug, privateNodeVersion } from '../runtime/nodeRuntime.js';
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import type { McpManager } from '../mcp/manager.js';
 import { searchMcpRegistry, resolveRegistryServer } from '../mcp/registry.js';
@@ -875,6 +876,35 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   let playwrightInstallInProgress = false;
   const execFileAsync = promisify(execFile);
 
+  // ── Node.js for optional features ───────────────────────────────────────
+  // The browser tool needs Node 20+. If the server's Node is older, install a private Node 20 for THIS agent
+  // (in its own folder, no root, nothing else on the machine changes); `svara start` then runs on it.
+  let nodeInstall: { state: 'idle' | 'installing' | 'done' | 'error'; message: string } = { state: 'idle', message: '' };
+
+  api.get('/runtime/node', asyncRoute(async (_req, res) => {
+    res.json({
+      current: process.versions.node,
+      required: PRIVATE_NODE_MAJOR,
+      supported: nodeMajor() >= PRIVATE_NODE_MAJOR,
+      usingPrivate: process.env.SVARA_REEXEC === '1',
+      privateVersion: configDir ? await privateNodeVersion(configDir) : null,
+      canInstall: !!configDir && !!platformSlug() && !opts.embeddedToken,
+      install: nodeInstall,
+    });
+  }));
+
+  api.post('/runtime/node/install', noNesting, asyncRoute(async (_req, res) => {
+    if (!configDir) { res.status(400).json({ error: 'Not available on this runtime.' }); return; }
+    if (nodeMajor() >= PRIVATE_NODE_MAJOR) { res.status(400).json({ error: `This server already runs Node.js ${process.versions.node}.` }); return; }
+    if (!platformSlug()) { res.status(400).json({ error: `Automatic install is not available on ${process.platform}/${process.arch}. Install Node.js ${PRIVATE_NODE_MAJOR}+ manually.` }); return; }
+    if (nodeInstall.state === 'installing') { res.status(409).json({ error: 'An install is already in progress.' }); return; }
+    nodeInstall = { state: 'installing', message: 'Starting...' };
+    res.json({ started: true });
+    installNodeAndRebuild(configDir, { onProgress: (m) => { nodeInstall = { state: 'installing', message: m }; } })
+      .then((v) => { nodeInstall = { state: 'done', message: `Node.js ${v} is installed. Restart the runtime to start using it.` }; })
+      .catch((e) => { nodeInstall = { state: 'error', message: (e as Error).message }; });
+  }));
+
   api.get('/tools/browser/status', asyncRoute(async (_req, res) => {
     res.json({
       installed: await isPlaywrightInstalled(),
@@ -891,8 +921,10 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
 
     playwrightInstallInProgress = true;
     try {
-      await execFileAsync('npm', ['install', 'playwright'], { cwd, timeout: 5 * 60 * 1000 });
-      await execFileAsync('npx', ['playwright', 'install', 'chromium'], { cwd, timeout: 5 * 60 * 1000 });
+      // npm/npx must run on the same (private) Node 20 that the runtime itself uses, not the server's old one.
+      const env = envWithPrivateNode(cwd);
+      await execFileAsync('npm', ['install', 'playwright'], { cwd, timeout: 5 * 60 * 1000, env });
+      await execFileAsync('npx', ['playwright', 'install', 'chromium'], { cwd, timeout: 5 * 60 * 1000, env });
       res.json({ installed: await isPlaywrightInstalled() });
     } catch (e) {
       res.status(500).json({ error: (e as Error).message });

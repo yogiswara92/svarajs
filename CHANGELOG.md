@@ -16,6 +16,13 @@
 - Agent-first sidebar (avatar, name, status).
 - `SVARA_HOST` environment variable to bind the server to a specific interface.
 
+- **Node.js 20 from the dashboard.** Settings > Capabilities can install a private Node.js 20 for the agent (downloaded from
+  nodejs.org and checked against its published SHA-256, kept in `.svara/node`, no root, nothing else on the server changes),
+  rebuild the native modules for it (with a database smoke test and automatic rollback), and `svara start` then runs on it
+  after a restart. If the private Node cannot run the installed native modules it is not used and the agent stays up.
+- "Restart runtime" now exits with a restart code when something already supervises the process (systemd, pm2, the Node
+  wrapper, or the parent of a sibling agent) instead of spawning a competing copy.
+
 ### Fixed
 - `crypto is not defined` on Node 18 (chat, web channel, approvals, delegation, cron). A test now fails if a source file
   uses `crypto.*` without importing it.
