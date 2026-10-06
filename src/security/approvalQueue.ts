@@ -8,6 +8,8 @@
  * waits; the dashboard lists pending entries and calls `respond()`.
  */
 
+import crypto from 'crypto';
+
 export interface PendingApproval {
   id: string;
   command: string;

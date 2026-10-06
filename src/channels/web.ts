@@ -18,6 +18,7 @@
  *   GET  /health     - { status: 'ok' }
  */
 
+import crypto from 'crypto';
 import express, { type Express } from 'express';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
 import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';

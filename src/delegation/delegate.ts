@@ -12,6 +12,7 @@
  * not a durable cross-restart queue.
  */
 
+import crypto from 'crypto';
 import type { SvaraAgent } from '../core/agent.js';
 import type { Tool } from '../types.js';
 

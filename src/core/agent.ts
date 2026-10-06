@@ -35,6 +35,7 @@
  * ```
  */
 
+import crypto from 'crypto';
 import EventEmitter from 'events';
 import type { RequestHandler, Express } from 'express';
 import { createAdapter, resolveConfig, type LLMAdapter } from './llm.js';

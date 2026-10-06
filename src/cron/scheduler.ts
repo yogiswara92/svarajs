@@ -14,6 +14,7 @@
  * scheduler.create('0 9 * * *', 'Summarize overnight activity and report it.');
  */
 
+import crypto from 'crypto';
 import { schedule, validate, type ScheduledTask } from 'node-cron';
 import type { SvaraAgent } from '../core/agent.js';
 import type { SkillRegistry } from '../skills/registry.js';
