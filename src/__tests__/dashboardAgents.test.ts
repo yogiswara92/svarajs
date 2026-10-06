@@ -18,7 +18,10 @@ vi.mock('child_process', () => ({
   }),
 }));
 
-const { listSiblingAgents, createSiblingAgent } = await import('../dashboard/agents.js');
+// Deterministic ports regardless of what happens to be listening on the dev machine.
+vi.mock('../dashboard/supervisor.js', async (orig) => ({ ...(await orig<typeof import('../dashboard/supervisor.js')>()), isPortFree: async () => true }));
+
+const { listSiblingAgents, createSiblingAgent, deleteSiblingAgent } = await import('../dashboard/agents.js');
 
 async function writeConfig(dir: string, port: number): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
@@ -107,5 +110,73 @@ describe('createSiblingAgent', () => {
     const result = await createSiblingAgent(currentDir, { name: 'new-agent', model: 'claude-opus-4-6' });
     const written = JSON.parse(await fs.readFile(path.join(result.dir, 'svara.config.json'), 'utf-8'));
     expect(written.model).toBe('claude-opus-4-6');
+  });
+});
+
+describe('createSiblingAgent with its own LLM connection', () => {
+  let parentDir: string;
+  let currentDir: string;
+  beforeEach(async () => {
+    parentDir = await fs.mkdtemp(path.join(os.tmpdir(), 'svara-agents-llm-'));
+    currentDir = path.join(parentDir, 'current-agent');
+    await writeConfig(currentDir, 3000);
+  });
+  afterEach(async () => { await fs.rm(parentDir, { recursive: true, force: true }); });
+
+  it('writes provider, base URL and model, and encrypts the API key at rest', async () => {
+    await createSiblingAgent(currentDir, {
+      name: 'helper', model: 'gpt-4o',
+      llm: { provider: 'openai', baseURL: 'https://openrouter.ai/api/v1', apiKey: 'sk-secret-12345' },
+    });
+    const cfgPath = path.join(parentDir, 'helper', 'svara.config.json');
+    const saved = JSON.parse(await fs.readFile(cfgPath, 'utf-8'));
+    expect(saved.llm.provider).toBe('openai');
+    expect(saved.llm.baseURL).toBe('https://openrouter.ai/api/v1');
+    expect(saved.model).toBe('gpt-4o');
+    expect(saved.llm.apiKey).not.toContain('sk-secret-12345');
+    expect(saved.llm.apiKey.startsWith('enc:')).toBe(true);
+    expect(fsSync.existsSync(path.join(parentDir, 'helper', '.svara', 'secrets.key'))).toBe(true);
+  });
+
+  it('leaves llm out entirely when none is given', async () => {
+    await createSiblingAgent(currentDir, { name: 'plain' });
+    const saved = JSON.parse(await fs.readFile(path.join(parentDir, 'plain', 'svara.config.json'), 'utf-8'));
+    expect(saved.llm).toBeUndefined();
+  });
+});
+
+describe('managed sibling lifecycle helpers', () => {
+  let parentDir: string;
+  let currentDir: string;
+  beforeEach(async () => {
+    parentDir = await fs.mkdtemp(path.join(os.tmpdir(), 'svara-agents-del-'));
+    currentDir = path.join(parentDir, 'current-agent');
+    await writeConfig(currentDir, 3000);
+  });
+  afterEach(async () => { await fs.rm(parentDir, { recursive: true, force: true }); });
+
+  it('marks dashboard-created agents as managed and lets only those be deleted', async () => {
+    await createSiblingAgent(currentDir, { name: 'mine' });
+    const [mine] = (await (await import('../dashboard/agents.js')).readSiblingConfigs(currentDir));
+    expect(mine).toMatchObject({ name: 'mine', managed: true });
+
+    await writeConfig(path.join(parentDir, 'hand-made'), 3050);
+    await expect(deleteSiblingAgent(currentDir, 'hand-made')).rejects.toThrow(/created from the dashboard/);
+    await expect(deleteSiblingAgent(currentDir, '../etc')).rejects.toThrow(/Invalid/);
+    await expect(deleteSiblingAgent(currentDir, 'current-agent')).rejects.toThrow();
+
+    await deleteSiblingAgent(currentDir, 'mine');
+    expect(fsSync.existsSync(path.join(parentDir, 'mine'))).toBe(false);
+    expect(fsSync.existsSync(path.join(parentDir, 'hand-made'))).toBe(true);
+  });
+
+  it('refuses to create more agents than the limit', async () => {
+    process.env.SVARA_MAX_SIBLINGS = '1';
+    try {
+      await createSiblingAgent(currentDir, { name: 'first' });
+      await expect(createSiblingAgent(currentDir, { name: 'second' })).rejects.toThrow(/limit is 1/);
+    } finally {
+      delete process.env.SVARA_MAX_SIBLINGS;
+    }
   });
 });

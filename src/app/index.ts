@@ -102,10 +102,13 @@ export class SvaraApp {
   listen(port = 3000): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = createServer(this.express);
-      this.server.listen(port, () => {
-        console.log(`[@yesvara/svara] Server running at http://localhost:${port}`);
+      // SVARA_HOST=127.0.0.1 keeps a managed sibling agent off the network (only the main runtime's proxy reaches it).
+      const host = process.env.SVARA_HOST || undefined;
+      const onListening = () => {
+        console.log(`[@yesvara/svara] Server running at http://${host ?? 'localhost'}:${port}`);
         resolve();
-      });
+      };
+      if (host) this.server.listen(port, host, onListening); else this.server.listen(port, onListening);
       this.server.on('error', reject);
     });
   }

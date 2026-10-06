@@ -87,6 +87,32 @@ program
     });
   });
 
+// ── svara user ... ────────────────────────────────────────────────────────────
+const userCmd = program.command('user').description('Manage dashboard login accounts (email + password)');
+const userAction = (fn: 'userAdd' | 'userPasswd' | 'userRemove') =>
+  async (email: string, opts: { config: string; password?: string; force?: boolean }) => {
+    const mod = await import('./commands/user.js');
+    try { await mod[fn](email, opts); } catch (err) { console.error((err as Error).message); process.exit(1); }
+  };
+userCmd.command('add <email>').description('Create a login account (prompts for a password)')
+  .option('--config <path>', 'Path to the runtime config file', 'svara.config.json')
+  .option('--password <password>', 'Set the password non-interactively (visible in shell history - prefer the prompt)')
+  .action(userAction('userAdd'));
+userCmd.command('passwd <email>').description('Change an account password')
+  .option('--config <path>', 'Path to the runtime config file', 'svara.config.json')
+  .option('--password <password>', 'Set the password non-interactively (visible in shell history - prefer the prompt)')
+  .action(userAction('userPasswd'));
+userCmd.command('remove <email>').description('Delete a login account')
+  .option('--config <path>', 'Path to the runtime config file', 'svara.config.json')
+  .option('--force', 'Allow removing the last account even though that leaves the dashboard open')
+  .action(userAction('userRemove'));
+userCmd.command('list').description('List login accounts')
+  .option('--config <path>', 'Path to the runtime config file', 'svara.config.json')
+  .action(async (opts: { config: string }) => {
+    const { userList } = await import('./commands/user.js');
+    try { await userList(opts); } catch (err) { console.error((err as Error).message); process.exit(1); }
+  });
+
 // ── svara db:* commands ────────────────────────────────────────────────────────
 
 // svara db:list-chunks

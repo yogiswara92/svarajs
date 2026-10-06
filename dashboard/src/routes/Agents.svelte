@@ -6,16 +6,16 @@
   let loading = true;
   let loadError = '';
 
-  let form = { name: '', provider: '', model: '' };
+  let form = { name: '', provider: '', model: '', llmMode: 'same', baseURL: '', apiKey: '' };
   let creating = false;
   let createError = '';
   let created = null;
-  let copied = false;
 
   async function load() {
     try {
       const res = await api.get('/api/agents');
       agents = res.agents ?? [];
+      canRun = res.canRun !== false;
       loadError = '';
     } catch (e) {
       loadError = e instanceof ApiError ? e.message : 'Failed to load agents.';
@@ -26,23 +26,70 @@
 
   onMount(load);
 
-  function dashboardUrl(port) {
-    return `${window.location.protocol}//${window.location.hostname}:${port}/dashboard`;
+  const STATUS_LABEL = { running: 'Running', starting: 'Starting...', stopped: 'Stopped', crashed: 'Crashed', external: 'Running (outside dashboard)' };
+
+  let canRun = true;
+  let busyName = '';
+  let actionError = '';
+  let logName = '';
+  let logText = '';
+
+  async function act(name, verb) {
+    busyName = name;
+    actionError = '';
+    try {
+      await api.post(`/api/agents/${encodeURIComponent(name)}/${verb}`);
+      await load();
+    } catch (e) {
+      actionError = e instanceof ApiError ? e.message : `Could not ${verb} ${name}.`;
+    } finally {
+      busyName = '';
+    }
+  }
+
+  async function remove(name) {
+    const typed = prompt(`This permanently deletes "${name}" and all its data (memory, uploads, settings).\n\nType the agent name to confirm:`);
+    if (typed !== name) return;
+    busyName = name;
+    actionError = '';
+    try {
+      await api.delete(`/api/agents/${encodeURIComponent(name)}`, { confirm: name });
+      if (logName === name) logName = '';
+      await load();
+    } catch (e) {
+      actionError = e instanceof ApiError ? e.message : `Could not delete ${name}.`;
+    } finally {
+      busyName = '';
+    }
+  }
+
+  async function showLog(name) {
+    if (logName === name) { logName = ''; return; }
+    logName = name;
+    logText = 'Loading...';
+    try {
+      logText = (await api.get(`/api/agents/${encodeURIComponent(name)}/logs?lines=200`)).log || '(no output yet)';
+    } catch (e) {
+      logText = e instanceof ApiError ? e.message : 'Could not load the log.';
+    }
   }
 
   async function createAgent() {
     creating = true;
     createError = '';
     created = null;
-    copied = false;
     try {
+      const custom = form.llmMode === 'custom';
       const payload = {
         name: form.name.trim(),
-        provider: form.provider || undefined,
         model: form.model.trim() || undefined,
+        llmMode: form.llmMode,
+        // 'Same as this agent' reuses this agent's connection; 'custom' sends the typed one.
+        provider: custom && ['openai', 'anthropic', 'ollama'].includes(form.provider) ? form.provider : undefined,
+        llm: custom ? { provider: form.provider || undefined, baseURL: form.baseURL.trim() || undefined, apiKey: form.apiKey.trim() || undefined } : undefined,
       };
       created = await api.post('/api/agents', payload);
-      form = { name: '', provider: '', model: '' };
+      form = { name: '', provider: '', model: '', llmMode: 'same', baseURL: '', apiKey: '' };
       await load();
     } catch (e) {
       createError = e instanceof ApiError ? e.message : 'Failed to create agent.';
@@ -51,26 +98,13 @@
     }
   }
 
-  async function copyPm2Command() {
-    if (!created) return;
-    try {
-      await navigator.clipboard.writeText(created.pm2Command);
-      copied = true;
-      setTimeout(() => (copied = false), 2000);
-    } catch {
-      // Clipboard API unavailable (non-HTTPS, permissions) - the command is
-      // still shown in the code block for manual copy.
-    }
-  }
 </script>
 
 <h1>Agents</h1>
 <p class="note">
-  Each agent here is a fully separate standalone project (own folder, own <code>svara.config.json</code>,
-  own port) next to this one - not multiple agents inside a single process. Scaffolding a new one runs
-  <code>svara new</code> and installs its dependencies, but does not start it - start it yourself (e.g.
-  with <code>pm2</code>, shown below) so it's supervised the same way as everything else you run in
-  production.
+  Create extra agents that run on this same server, each with its own settings, memory, channels and
+  dashboard. They start automatically, come back after a restart, and are opened from here with the
+  same login - no extra setup on your server.
 </p>
 
 <h2>Create a new agent</h2>
@@ -82,44 +116,66 @@
     <span class="hint">Lowercase letters, numbers, and hyphens only - becomes the folder name.</span>
   </label>
   <label>
-    Provider
-    <select bind:value={form.provider}>
-      <option value="">Auto-detect from model name</option>
-      <option value="openai">OpenAI</option>
-      <option value="anthropic">Anthropic</option>
-      <option value="ollama">Ollama (local)</option>
+    AI model connection
+    <select bind:value={form.llmMode}>
+      <option value="same">Same as this agent (reuse its provider, endpoint and API key)</option>
+      <option value="custom">Custom (use a different provider or API key)</option>
     </select>
   </label>
+  {#if form.llmMode === 'custom'}
+    <label>
+      Provider
+      <select bind:value={form.provider}>
+        <option value="">Auto-detect from model name</option>
+        <option value="openai">OpenAI, or any OpenAI-compatible endpoint</option>
+        <option value="anthropic">Anthropic</option>
+        <option value="groq">Groq</option>
+        <option value="ollama">Ollama (local)</option>
+      </select>
+    </label>
+    <label>
+      Base URL <span class="hint" style="display:inline">(optional)</span>
+      <input bind:value={form.baseURL} placeholder="https://openrouter.ai/api/v1" />
+      <span class="hint">Only for OpenAI-compatible services such as OpenRouter, Together, or your own gateway.</span>
+    </label>
+    <label>
+      API key
+      <input type="password" bind:value={form.apiKey} autocomplete="off" placeholder="sk-..." />
+      <span class="hint">Stored encrypted in the new agent's config. Leave blank to read it from the server's environment variable instead.</span>
+    </label>
+  {/if}
   <label>
     Model
-    <input bind:value={form.model} placeholder="gpt-4o-mini" />
-    <span class="hint">Leave blank to use the scaffold's default for the selected provider.</span>
+    <input bind:value={form.model} placeholder={form.llmMode === 'same' ? "Blank = same model as this agent" : "gpt-4o-mini"} />
+    <span class="hint">{form.llmMode === 'same' ? "Leave blank to use this agent's model." : "The model name your provider expects."}</span>
   </label>
   <div class="actions">
     <button class="btn primary" type="submit" disabled={creating}>
-      {creating ? 'Creating... (installing dependencies, can take a minute)' : 'Create agent'}
+      {creating ? 'Creating and starting...' : 'Create agent'}
     </button>
   </div>
 </form>
 
 {#if created}
   <div class="created-banner">
-    <p class="success-text">"{created.name}" created at <code>{created.dir}</code> on port {created.port}.</p>
-    <p class="hint" style="margin-top: 0.4rem;">Start it under the same process manager you already use:</p>
-    <div class="pm2-command">
-      <code>{created.pm2Command}</code>
-      <button type="button" class="btn secondary small" on:click={copyPm2Command}>{copied ? 'Copied!' : 'Copy'}</button>
-    </div>
+    <p class="success-text">"{created.name}" is {created.started ? 'running' : 'created'}.</p>
+    {#if created.url && created.started}
+      <p class="hint" style="margin-top: 0.4rem;">Next: open it, connect a channel (Settings, then Channels), and give it a personality (Settings, then General).</p>
+      <p style="margin-top: 0.6rem;"><a class="btn primary small" href={created.url}>Open {created.name}</a></p>
+    {:else}
+      <p class="hint" style="margin-top: 0.4rem;">It did not come up yet. Check its log below, or press Start.</p>
+    {/if}
   </div>
 {/if}
 
-<h2 class="section-heading">Existing agents</h2>
+<h2 class="section-heading">Your agents</h2>
+{#if actionError}<p class="error-text">{actionError}</p>{/if}
 {#if loading}
   <p class="muted">Loading...</p>
 {:else if loadError}
   <p class="error-text">{loadError}</p>
 {:else if agents.length === 0}
-  <p class="muted">No sibling agents yet - create one above.</p>
+  <p class="muted">No extra agents yet - create one above.</p>
 {:else}
   <ul class="list">
     {#each agents as agent (agent.dir)}
@@ -127,15 +183,30 @@
         <div class="agent-row">
           <div>
             <div class="list-item-title">{agent.name}</div>
-            <div class="list-item-meta">{agent.dir} · port {agent.port ?? '?'}</div>
+            <div class="list-item-meta">{agent.dir}{agent.restarts ? ` · restarted ${agent.restarts}x` : ''}</div>
+            {#if agent.status === 'crashed'}<div class="list-item-meta" style="color:var(--danger)">Stopped after repeated crashes{agent.lastExit ? ` (${agent.lastExit})` : ''}. Check the log, fix the settings, then Start.</div>{/if}
           </div>
           <div class="agent-row-right">
-            <span class="chip" class:success={agent.running}>{agent.running ? 'Running' : 'Not running'}</span>
-            {#if agent.running && agent.port}
-              <a class="btn secondary small" href={dashboardUrl(agent.port)} target="_blank" rel="noopener">Open dashboard</a>
+            <span class="chip" class:success={agent.status === 'running'}>{STATUS_LABEL[agent.status] ?? agent.status}</span>
+            {#if agent.url}
+              <a class="btn primary small" href={agent.url}>Open</a>
+            {/if}
+            {#if canRun && (agent.status === 'stopped' || agent.status === 'crashed')}
+              <button class="btn secondary small" disabled={busyName === agent.name} on:click={() => act(agent.name, 'start')}>Start</button>
+            {/if}
+            {#if canRun && (agent.status === 'running' || agent.status === 'starting')}
+              <button class="btn secondary small" disabled={busyName === agent.name} on:click={() => act(agent.name, 'restart')}>Restart</button>
+              <button class="btn secondary small" disabled={busyName === agent.name} on:click={() => act(agent.name, 'stop')}>Stop</button>
+            {/if}
+            <button class="btn secondary small" on:click={() => showLog(agent.name)}>{logName === agent.name ? 'Hide log' : 'Log'}</button>
+            {#if agent.managed}
+              <button class="btn danger small" disabled={busyName === agent.name} on:click={() => remove(agent.name)}>Delete</button>
             {/if}
           </div>
         </div>
+        {#if logName === agent.name}
+          <pre class="log">{logText}</pre>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -171,7 +242,21 @@
     justify-content: space-between;
     gap: 1rem;
   }
+  .log {
+    margin-top: 0.75rem;
+    max-height: 18rem;
+    overflow: auto;
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    padding: 0.7rem 0.85rem;
+    font-size: 0.78rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .agent-row-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
     display: flex;
     align-items: center;
     gap: 0.6rem;

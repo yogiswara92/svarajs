@@ -165,7 +165,19 @@ const RuntimeConfigSchema = z.object({
    */
   apiKey: z.string().optional(),
 
-  dashboard: z.union([z.boolean(), z.object({ token: z.string().optional() })]).default(true),
+  /**
+   * Dashboard access. `users` enables email + password login (manage with
+   * `svara user add|passwd|remove|list`); `token` is the older single shared
+   * bearer token and keeps working alongside it. With neither, the dashboard
+   * is open - fine on localhost, never on a public server.
+   */
+  dashboard: z.union([
+    z.boolean(),
+    z.object({
+      token: z.string().optional(),
+      users: z.array(z.object({ email: z.string(), passwordHash: z.string() })).optional(),
+    }),
+  ]).default(true),
 });
 
 export type SvaraRuntimeConfig = z.infer<typeof RuntimeConfigSchema>;

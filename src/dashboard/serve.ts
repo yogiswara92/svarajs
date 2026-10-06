@@ -20,6 +20,8 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import fs from 'fs';
+import crypto from 'crypto';
+import http from 'http';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -29,7 +31,14 @@ import type { ChannelName } from '../core/types.js';
 import type { CronScheduler } from '../cron/scheduler.js';
 import type { ApprovalQueue } from '../security/approvalQueue.js';
 import type { SkillFrontmatter } from '../skills/types.js';
-import { readRawConfig, saveRuntimeConfig } from '../runtime/config.js';
+import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/config.js';
+import type { AgentLlmOptions } from './agents.js';
+import { type SiblingSupervisor, pingHealth, readLogTail } from './supervisor.js';
+import {
+  type DashboardUser, SESSION_COOKIE, LoginLimiter, authenticate, clearSessionCookie, clientIp,
+  SetupCodes, createSessionToken, hashPassword, isSameOrigin, isValidEmail, loadSessionKey, normalizeEmail, parseCookies,
+  readSessionToken, setSessionCookie, userFingerprint, validatePasswordStrength, verifyPassword,
+} from './auth.js';
 import { mapSecretFields } from '../security/secretFields.js';
 import { validateWithinDir } from '../security/pathGuard.js';
 import { isPlaywrightInstalled } from '../tools/lazyDeps.js';
@@ -90,8 +99,16 @@ export interface DashboardOptions {
   /** Respawns the runtime process and exits this one - powers the dashboard's "Restart runtime" button. Not available in library mode. */
   restart?: () => void;
   token?: string;
+  /** Email + password accounts. Also read live from `dashboard.users` in the config file, so `svara user add` needs no restart. */
+  users?: DashboardUser[];
   /** Path to svara.config.json - lets the Settings page read/write it directly. */
   configPath?: string;
+  /** Runs sibling agents as child processes of this runtime (created by the standalone runtime for a normal `svara start`). */
+  supervisor?: SiblingSupervisor;
+  /** Set when THIS process is itself a managed sibling: the only credential accepted is this token (sent by the parent's proxy). */
+  embeddedToken?: string;
+  /** How long after boot the account-creation page stays open when there is no out-of-band proof of ownership (no linked Telegram). @default 60 minutes */
+  setupWindowMs?: number;
 }
 
 function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
@@ -102,6 +119,7 @@ function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
 
 export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   const expressApp = app.getExpressApp();
+  const supervisor = opts.supervisor;
   // dist/dashboard/serve.js (this file, compiled) -> ../../dashboard/dist (package root/dashboard/dist)
   const dashboardDist = path.resolve(__dirname, '../../dashboard/dist');
   // Where uploaded knowledge documents get written - next to the config file
@@ -120,6 +138,44 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       cb(null, KNOWLEDGE_UPLOAD_EXTENSIONS.has(path.extname(file.originalname).toLowerCase()));
     },
   });
+
+  // ── Reverse proxy to managed sibling agents: /a/<name>/... -> 127.0.0.1:<port>/... ──
+  // Gated by the SAME login as this dashboard; the child itself only accepts the
+  // per-start token injected here, so its port is useless to anyone else on the box.
+  if (supervisor && !opts.embeddedToken) {
+    expressApp.use('/a/:name', (req: Request, res: Response) => {
+      void (async () => {
+        const name = String(req.params.name);
+        const auth = await authorize(req);
+        if (auth.result !== 'ok') {
+          if (req.method === 'GET' && String(req.headers.accept ?? '').includes('text/html')) { res.redirect('/dashboard/'); return; }
+          res.status(auth.result === 'forbidden' ? 403 : 401).json({ error: auth.result === 'forbidden' ? 'Forbidden' : 'Unauthorized', auth: auth.auth });
+          return;
+        }
+        const state = supervisor.state(name);
+        const token = supervisor.tokenFor(name);
+        if (!state || !token || (state.status !== 'running' && state.status !== 'starting')) {
+          res.status(502).type('text/plain').send(`Agent "${name}" is not running. Start it from the Agents page.`);
+          return;
+        }
+        const headers = { ...req.headers } as http.OutgoingHttpHeaders;
+        delete headers.cookie; // never hand this dashboard's session to the child
+        delete headers.origin;
+        headers.host = `127.0.0.1:${state.port}`;
+        headers.authorization = `Bearer ${token}`;
+        const upstream = http.request({ host: '127.0.0.1', port: state.port, method: req.method, path: req.url, headers }, (up) => {
+          const out = { ...up.headers } as http.OutgoingHttpHeaders;
+          // The child redirects within ITS root (e.g. /dashboard -> /dashboard/): keep the browser under /a/<name>.
+          if (typeof out.location === 'string' && out.location.startsWith('/')) out.location = `/a/${name}${out.location}`;
+          res.writeHead(up.statusCode ?? 502, out);
+          up.pipe(res);
+        });
+        upstream.on('error', () => { if (!res.headersSent) res.status(502).type('text/plain').send(`Agent "${name}" did not respond.`); else res.end(); });
+        res.on('close', () => upstream.destroy());
+        req.pipe(upstream);
+      })().catch(() => { if (!res.headersSent) res.status(500).end(); });
+    });
+  }
 
   if (fs.existsSync(path.join(dashboardDist, 'index.html'))) {
     expressApp.use('/dashboard', express.static(dashboardDist));
@@ -202,16 +258,313 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
 
   const api = express.Router();
 
-  if (opts.token) {
-    api.use((req, res, next) => {
-      const provided = req.headers.authorization?.replace('Bearer ', '');
-      if (provided !== opts.token) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
+  // ── Auth: email+password sessions (preferred) or the legacy bearer token ──
+  const sessionKey = loadSessionKey(configDir);
+  const limiter = new LoginLimiter();
+  const setupCodes = new SetupCodes();
+  const bootAt = Date.now();
+  const setupWindowMs = opts.setupWindowMs ?? 60 * 60 * 1000;
+  let setupBusy = false; // serialises first-account creation so two racing visitors cannot both win
+  // Counts every code request (not just failures): 3 per 15 min per client, 6 per hour overall.
+  const setupRequestLimiter = new LoginLimiter([
+    { prefix: 'ip', max: 3, windowMs: 15 * 60 * 1000 },
+    { prefix: 'email', max: 6, windowMs: 60 * 60 * 1000 },
+  ]);
+  let usersCache: { at: number; users: DashboardUser[] } | null = null;
+
+  async function getUsers(fresh = false): Promise<DashboardUser[]> {
+    if (!fresh && usersCache && Date.now() - usersCache.at < 3000) return usersCache.users;
+    let users = opts.users ?? [];
+    if (opts.configPath) {
+      try {
+        const raw = await readRawConfig(opts.configPath);
+        const d = raw.dashboard;
+        if (isPlainObject(d) && Array.isArray(d.users)) {
+          users = d.users.filter((u): u is DashboardUser =>
+            isPlainObject(u) && typeof u.email === 'string' && typeof u.passwordHash === 'string');
+        }
+      } catch {
+        // unreadable config: keep whatever we had
       }
-      next();
-    });
+    }
+    usersCache = { at: Date.now(), users };
+    return users;
   }
+
+  function bearerMatches(req: Request): boolean {
+    if (!opts.token) return false;
+    const h = req.headers.authorization;
+    if (!h || !h.startsWith('Bearer ')) return false;
+    const a = Buffer.from(h.slice(7));
+    const b = Buffer.from(opts.token);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+
+  /** The logged-in user for this request's session cookie, or null. */
+  async function sessionUser(req: Request): Promise<DashboardUser | null> {
+    const session = readSessionToken(sessionKey, parseCookies(req.headers.cookie)[SESSION_COOKIE]);
+    if (!session) return null;
+    const users = await getUsers();
+    const user = users.find((u) => normalizeEmail(u.email) === session.email);
+    return user && userFingerprint(user) === session.fingerprint ? user : null;
+  }
+
+  const authRouter = express.Router();
+
+  authRouter.get('/config', asyncRoute(async (_req, res) => {
+    if (opts.embeddedToken) { res.json({ mode: 'none', canSetup: false, setupMethod: null, setupMinutesLeft: null, setupViaLog: false, embedded: true }); return; }
+    const users = await getUsers();
+    const setup = users.length ? null : await setupState();
+    res.json({
+      mode: users.length ? 'password' : opts.token ? 'token' : 'none',
+      canSetup: users.length === 0,
+      setupMethod: setup?.method ?? null,
+      setupMinutesLeft: setup?.minutesLeft ?? null,
+      setupViaLog: setup?.viaLog ?? false,
+    });
+  }));
+
+  /**
+   * How the first account may be created:
+   *  - 'direct' nothing to verify against yet: anyone may register, but only during the setup window after boot
+   *  - 'code'   a one-time code proves control of the server: sent to the linked Telegram owner, or - when none is
+   *             linked and the window has passed - written to the server log (`viaLog`). Never a dead end.
+   */
+  async function setupState(): Promise<{ method: 'code' | 'direct'; minutesLeft: number; viaLog: boolean }> {
+    let hasOwnerChannel = false;
+    try {
+      const raw = opts.configPath ? await readRawConfig(opts.configPath) : {};
+      const channels = isPlainObject(raw.channels) ? raw.channels : {};
+      const tg = isPlainObject(channels.telegram) ? channels.telegram : {};
+      hasOwnerChannel = !!opts.agent.getChannel('telegram') && Array.isArray(tg.allowedUserIds) && tg.allowedUserIds.length > 0;
+    } catch { /* treat as no owner channel */ }
+    if (hasOwnerChannel) return { method: 'code', minutesLeft: 0, viaLog: false };
+    const left = bootAt + setupWindowMs - Date.now();
+    return left > 0
+      ? { method: 'direct', minutesLeft: Math.ceil(left / 60000), viaLog: false }
+      : { method: 'code', minutesLeft: 0, viaLog: true };
+  }
+
+  void (async () => {
+    if (opts.embeddedToken || (await getUsers(true)).length) return;
+    const s = await setupState();
+    if (s.method === 'direct') console.log(`[@yesvara/svara] No dashboard account yet. Open /dashboard in your browser to create one (open for ${s.minutesLeft} minutes).`);
+  })();
+
+  /** Writes the user list back into svara.config.json (keeping the rest of the `dashboard` block, e.g. the legacy token). */
+  async function persistUsers(users: DashboardUser[]): Promise<void> {
+    if (!opts.configPath) throw new Error('No config file available on this runtime.');
+    const raw = await readRawConfig(opts.configPath);
+    const dash = isPlainObject(raw.dashboard) ? raw.dashboard : {};
+    await saveRuntimeConfig(opts.configPath, { ...raw, dashboard: { ...dash, users } });
+    usersCache = null;
+  }
+
+  // ── First-run setup: create the first account from the browser, no SSH ──
+  // Only open while NO account exists. Ownership is proven with a one-time code
+  // sent to the owner's Telegram (allowed users) and printed to the server log.
+  authRouter.post('/setup/request', asyncRoute(async (req, res) => {
+    if ((await getUsers(true)).length) { res.status(409).json({ error: 'An account already exists.' }); return; }
+    if (!isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if ((await setupState()).method !== 'code') { res.status(400).json({ error: 'A setup code is not needed here.' }); return; }
+    const ip = clientIp(req);
+    const wait = setupRequestLimiter.retryAfter(ip, 'setup');
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(wait));
+      res.status(429).json({ error: `Too many code requests. Try again in ${Math.ceil(wait / 60)} minute(s).` });
+      return;
+    }
+    setupRequestLimiter.fail(ip, 'setup');
+
+    const code = setupCodes.issue();
+    const message = `Your ${opts.agent.name} dashboard setup code: ${code}\n\nValid for 10 minutes. If you did not ask for this, ignore it.`;
+    console.log(`[@yesvara/svara] Dashboard setup code: ${code} (valid 10 minutes)`);
+
+    const delivered: string[] = ['server log'];
+    try {
+      const tg = opts.agent.getChannel('telegram');
+      const raw = opts.configPath ? await readRawConfig(opts.configPath) : {};
+      const channels = isPlainObject(raw.channels) ? raw.channels : {};
+      const tgCfg = isPlainObject(channels.telegram) ? channels.telegram : {};
+      const ids = Array.isArray(tgCfg.allowedUserIds) ? tgCfg.allowedUserIds : [];
+      if (tg && ids.length) {
+        let ok = 0;
+        for (const id of ids) {
+          try { await tg.send(String(id), message); ok += 1; } catch { /* user never opened the bot */ }
+        }
+        if (ok) delivered.unshift('telegram');
+      }
+    } catch {
+      // Telegram is best-effort; the server log copy above always exists.
+    }
+    res.json({ ok: true, delivered });
+  }));
+
+  authRouter.post('/setup/complete', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
+    if ((await getUsers(true)).length) { res.status(409).json({ error: 'An account already exists.' }); return; }
+    if (!isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if (!opts.configPath) { res.status(400).json({ error: 'No config file available on this runtime.' }); return; }
+
+    const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const code = typeof req.body?.code === 'string' ? req.body.code : '';
+    if (!isValidEmail(email)) { res.status(400).json({ error: 'Enter a valid email address.' }); return; }
+    const weak = validatePasswordStrength(password);
+    if (weak) { res.status(400).json({ error: weak }); return; }
+    const method = (await setupState()).method;
+    if (method === 'code' && !setupCodes.consume(code)) {
+      res.status(400).json({ error: 'That code is wrong or expired. Request a new one.' });
+      return;
+    }
+
+    if (setupBusy) { res.status(409).json({ error: 'An account already exists.' }); return; }
+    setupBusy = true;
+    try {
+      if ((await getUsers(true)).length) { res.status(409).json({ error: 'An account already exists.' }); return; }
+      const user: DashboardUser = { email, passwordHash: hashPassword(password) };
+      await persistUsers([user]);
+      setSessionCookie(req, res, createSessionToken(sessionKey, user));
+      res.json({ ok: true, email });
+    } finally {
+      setupBusy = false;
+    }
+  }));
+
+  // ── Account management (signed-in users) ──
+  async function requireSession(req: Request, res: Response): Promise<DashboardUser | null> {
+    const user = await sessionUser(req);
+    if (!user) { res.status(401).json({ error: 'Unauthorized', auth: 'password' }); return null; }
+    if (!['GET', 'HEAD'].includes(req.method) && !isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return null; }
+    return user;
+  }
+
+  authRouter.get('/users', asyncRoute(async (req, res) => {
+    if (!(await requireSession(req, res))) return;
+    res.json({ users: (await getUsers(true)).map((u) => ({ email: u.email })) });
+  }));
+
+  authRouter.post('/users', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
+    if (!(await requireSession(req, res))) return;
+    const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!isValidEmail(email)) { res.status(400).json({ error: 'Enter a valid email address.' }); return; }
+    const weak = validatePasswordStrength(password);
+    if (weak) { res.status(400).json({ error: weak }); return; }
+    const users = await getUsers(true);
+    if (users.some((u) => normalizeEmail(u.email) === email)) { res.status(409).json({ error: 'That email already has an account.' }); return; }
+    await persistUsers([...users, { email, passwordHash: hashPassword(password) }]);
+    res.json({ ok: true });
+  }));
+
+  authRouter.delete('/users/:email', asyncRoute(async (req, res) => {
+    const me = await requireSession(req, res);
+    if (!me) return;
+    const email = normalizeEmail(req.params.email);
+    if (email === normalizeEmail(me.email)) { res.status(400).json({ error: 'You cannot remove your own account.' }); return; }
+    const users = await getUsers(true);
+    if (!users.some((u) => normalizeEmail(u.email) === email)) { res.status(404).json({ error: 'No such user.' }); return; }
+    await persistUsers(users.filter((u) => normalizeEmail(u.email) !== email));
+    res.json({ ok: true });
+  }));
+
+  authRouter.get('/me', asyncRoute(async (req, res) => {
+    const user = await sessionUser(req);
+    res.json({ authenticated: !!user, email: user?.email ?? null });
+  }));
+
+  authRouter.post('/login', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
+    const users = await getUsers(true);
+    if (!users.length) { res.status(400).json({ error: 'Password login is not enabled.' }); return; }
+    if (!isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return; }
+
+    const email = typeof req.body?.email === 'string' ? normalizeEmail(req.body.email) : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const ip = clientIp(req);
+    const wait = limiter.retryAfter(ip, email);
+    if (wait > 0) {
+      res.setHeader('Retry-After', String(wait));
+      res.status(429).json({ error: `Too many attempts. Try again in ${Math.ceil(wait / 60)} minute(s).` });
+      return;
+    }
+    const user = email && password ? authenticate(users, email, password) : null;
+    if (!user) {
+      limiter.fail(ip, email);
+      res.status(401).json({ error: 'Incorrect email or password.' });
+      return;
+    }
+    limiter.success(ip, email);
+    setSessionCookie(req, res, createSessionToken(sessionKey, user));
+    res.json({ ok: true, email: user.email });
+  }));
+
+  authRouter.post('/logout', (req, res) => {
+    if (!isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    clearSessionCookie(req, res);
+    res.json({ ok: true });
+  });
+
+  authRouter.post('/password', express.json({ limit: '10kb' }), asyncRoute(async (req, res) => {
+    const user = await sessionUser(req);
+    if (!user) { res.status(401).json({ error: 'Unauthorized', auth: 'password' }); return; }
+    if (!isSameOrigin(req)) { res.status(403).json({ error: 'Forbidden' }); return; }
+    if (!opts.configPath) { res.status(400).json({ error: 'No config file available on this runtime.' }); return; }
+
+    const current = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const next = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    const ip = clientIp(req);
+    const wait = limiter.retryAfter(ip, normalizeEmail(user.email));
+    if (wait > 0) { res.status(429).json({ error: 'Too many attempts. Try again later.' }); return; }
+    if (!verifyPassword(current, user.passwordHash)) {
+      limiter.fail(ip, normalizeEmail(user.email));
+      res.status(400).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+    const weak = validatePasswordStrength(next);
+    if (weak) { res.status(400).json({ error: weak }); return; }
+
+    const raw = await readRawConfig(opts.configPath);
+    const dash = isPlainObject(raw.dashboard) ? raw.dashboard : {};
+    const list = Array.isArray(dash.users) ? (dash.users as DashboardUser[]) : [];
+    const updated = list.map((u) => (normalizeEmail(u.email) === normalizeEmail(user.email) ? { ...u, passwordHash: hashPassword(next) } : u));
+    await saveRuntimeConfig(opts.configPath, { ...raw, dashboard: { ...dash, users: updated } });
+    usersCache = null;
+    // The old password's fingerprint is now invalid - issue a fresh session for this browser.
+    const fresh = (await getUsers(true)).find((u) => normalizeEmail(u.email) === normalizeEmail(user.email));
+    if (fresh) setSessionCookie(req, res, createSessionToken(sessionKey, fresh));
+    res.json({ ok: true });
+  }));
+
+  /**
+   * Whether this request may use the dashboard API (or the sibling proxy):
+   * 'ok', 'forbidden' (cross-origin write with a cookie session) or 'unauthorized'.
+   */
+  async function authorize(req: Request): Promise<{ result: 'ok' | 'forbidden' | 'unauthorized'; auth: 'password' | 'token' | 'embedded' }> {
+    if (opts.embeddedToken) {
+      const h = req.headers.authorization;
+      const a = Buffer.from(h && h.startsWith('Bearer ') ? h.slice(7) : '');
+      const b = Buffer.from(opts.embeddedToken);
+      return { result: a.length === b.length && crypto.timingSafeEqual(a, b) ? 'ok' : 'unauthorized', auth: 'embedded' };
+    }
+    const users = await getUsers();
+    if (!users.length && !opts.token) return { result: 'ok', auth: 'token' };
+    if (bearerMatches(req)) return { result: 'ok', auth: users.length ? 'password' : 'token' };
+    if (users.length) {
+      if (await sessionUser(req)) {
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !isSameOrigin(req)) return { result: 'forbidden', auth: 'password' };
+        return { result: 'ok', auth: 'password' };
+      }
+      return { result: 'unauthorized', auth: 'password' };
+    }
+    return { result: 'unauthorized', auth: 'token' };
+  }
+
+  api.use((req: Request, res: Response, next: NextFunction) => {
+    authorize(req).then((a) => {
+      if (a.result === 'ok') { next(); return; }
+      if (a.result === 'forbidden') { res.status(403).json({ error: 'Forbidden' }); return; }
+      res.status(401).json({ error: 'Unauthorized', auth: a.auth });
+    }).catch(next);
+  });
 
   api.get('/status', (_req, res) => {
     res.json({
@@ -224,7 +577,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   api.get('/config', asyncRoute(async (_req, res) => {
     if (!opts.configPath) { res.json({}); return; }
     const raw = await readRawConfig(opts.configPath);
-    res.json(redactSecrets(raw));
+    res.json(stripDashboardAuth(redactSecrets(raw)));
   }));
 
   // ── Chat (dashboard's own chat page - kept behind the same bearer auth as
@@ -325,8 +678,18 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     try {
       const current = await readRawConfig(opts.configPath);
       const merged = mergeConfigUpdates(current, req.body ?? {});
+      // Login accounts are managed only through `svara user` and the Account page. The API settings form
+      // may change the shared token, but a save from it must never drop (or expose) the accounts.
+      const curDash = isPlainObject(current.dashboard) ? current.dashboard : {};
+      if (curDash.users) {
+        const incoming = isPlainObject(merged.dashboard) ? merged.dashboard : {};
+        merged.dashboard = { ...incoming, users: curDash.users };
+      }
+      if (isPlainObject(merged.dashboard) && merged.dashboard.token === '[set]') {
+        merged.dashboard = { ...merged.dashboard, token: curDash.token };
+      }
       await saveRuntimeConfig(opts.configPath, merged);
-      res.json({ saved: true, restartRequired: true, config: redactSecrets(merged) });
+      res.json({ saved: true, restartRequired: true, config: stripDashboardAuth(redactSecrets(merged)) });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     }
@@ -345,22 +708,135 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   // "sibling folder" concept without a config file's directory to anchor to.
 
   let agentCreateInProgress = false;
+  const AGENT_NAME = /^[a-z][a-z0-9-]{0,50}$/;
 
-  api.get('/agents', asyncRoute(async (_req, res) => {
-    if (!configDir) { res.json({ agents: [] }); return; }
-    const { listSiblingAgents } = await import('./agents.js');
-    res.json({ agents: await listSiblingAgents(configDir) });
+  // A managed sibling does not manage others - agents are created and supervised from the main dashboard.
+  const noNesting = (_req: Request, res: Response, next: NextFunction) => {
+    if (opts.embeddedToken) { res.status(400).json({ error: 'Manage agents from the main dashboard.' }); return; }
+    next();
+  };
+
+  type SiblingView = {
+    name: string; dir: string; port: number | null; managed: boolean;
+    status: 'running' | 'starting' | 'stopped' | 'crashed' | 'external';
+    restarts: number; lastExit: string | null; url: string | null;
+  };
+
+  async function siblingViews(): Promise<SiblingView[]> {
+    if (!configDir) return [];
+    const { readSiblingConfigs } = await import('./agents.js');
+    return Promise.all((await readSiblingConfigs(configDir)).map(async (c) => {
+      const st = supervisor?.state(c.name) ?? null;
+      let status: SiblingView['status'] = st && st.status !== 'stopped' ? st.status : 'stopped';
+      // Running, but not under this supervisor (e.g. the user started it with pm2 on its own port).
+      if (status === 'stopped' && c.port !== null && (await pingHealth(c.port))) status = 'external';
+      const proxied = status === 'running' || status === 'starting';
+      return {
+        name: c.name, dir: c.dir, port: c.port, managed: c.managed, status,
+        restarts: st?.restarts ?? 0, lastExit: st?.lastExit ?? null,
+        url: proxied ? `/a/${c.name}/dashboard/` : null,
+      };
+    }));
+  }
+
+  async function findSibling(name: string) {
+    if (!configDir || !AGENT_NAME.test(name)) return null;
+    const { readSiblingConfigs } = await import('./agents.js');
+    return (await readSiblingConfigs(configDir)).find((c) => c.name === name) ?? null;
+  }
+
+  api.get('/agents', noNesting, asyncRoute(async (_req, res) => {
+    res.json({ agents: await siblingViews(), canRun: !!supervisor });
   }));
 
-  api.post('/agents', express.json(), asyncRoute(async (req, res) => {
+  api.post('/agents/:name/start', noNesting, asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib || sib.port === null) { res.status(404).json({ error: 'No such agent.' }); return; }
+    if (!supervisor) { res.status(400).json({ error: 'Starting agents is not available on this runtime.' }); return; }
+    if (supervisor.state(sib.name)?.status === 'running' || supervisor.state(sib.name)?.status === 'starting') {
+      res.status(409).json({ error: 'Already running.' }); return;
+    }
+    if (await pingHealth(sib.port)) { res.status(409).json({ error: `Port ${sib.port} is already in use by a process started outside the dashboard.` }); return; }
+    const st = await supervisor.start(sib.name, sib.dir, sib.port);
+    res.json({ state: st });
+  }));
+
+  api.post('/agents/:name/stop', noNesting, asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib) { res.status(404).json({ error: 'No such agent.' }); return; }
+    await supervisor?.stop(sib.name);
+    res.json({ ok: true });
+  }));
+
+  api.post('/agents/:name/restart', noNesting, asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib || sib.port === null) { res.status(404).json({ error: 'No such agent.' }); return; }
+    if (!supervisor) { res.status(400).json({ error: 'Restarting agents is not available on this runtime.' }); return; }
+    res.json({ state: await supervisor.restart(sib.name, sib.dir, sib.port) });
+  }));
+
+  api.get('/agents/:name/logs', noNesting, asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib) { res.status(404).json({ error: 'No such agent.' }); return; }
+    res.json({ log: readLogTail(sib.dir, Number(req.query.lines) || 200) });
+  }));
+
+  api.delete('/agents/:name', noNesting, express.json(), asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib || !configDir) { res.status(404).json({ error: 'No such agent.' }); return; }
+    if (req.body?.confirm !== sib.name) { res.status(400).json({ error: 'Type the agent name to confirm deletion.' }); return; }
+    if (!sib.managed) { res.status(400).json({ error: 'Only agents created from the dashboard can be deleted here.' }); return; }
+    await supervisor?.stop(sib.name);
+    const { deleteSiblingAgent } = await import('./agents.js');
+    await deleteSiblingAgent(configDir, sib.name);
+    res.json({ ok: true });
+  }));
+
+  api.post('/agents', noNesting, express.json(), asyncRoute(async (req, res) => {
     if (!configDir) { res.status(400).json({ error: 'Not available on this runtime.' }); return; }
     if (agentCreateInProgress) { res.status(409).json({ error: 'Another agent is already being created - wait for it to finish.' }); return; }
 
-    const { name, model, provider } = req.body ?? {};
+    const { name, model, provider, llmMode, llm: llmBody } = req.body ?? {};
     if (typeof name !== 'string' || !name) { res.status(400).json({ error: 'name is required.' }); return; }
     const ALLOWED_PROVIDERS = ['openai', 'anthropic', 'ollama'] as const;
     if (provider !== undefined && !ALLOWED_PROVIDERS.includes(provider)) {
       res.status(400).json({ error: `provider must be one of: ${ALLOWED_PROVIDERS.join(', ')}` });
+      return;
+    }
+
+    // Which AI connection the new agent gets: this agent's own ('same'), or one typed in ('custom').
+    let llm: AgentLlmOptions | undefined;
+    let modelToUse: string | undefined = typeof model === 'string' && model ? model : undefined;
+    try {
+      if (llmMode === 'same' && opts.configPath) {
+        const current = await loadRuntimeConfig(opts.configPath); // decrypted in memory only
+        llm = current.llm ? { ...current.llm } : undefined;
+        modelToUse = modelToUse ?? current.model;
+      } else if (llmMode === 'custom') {
+        const b = isPlainObject(llmBody) ? llmBody : {};
+        const LLM_PROVIDERS = ['openai', 'anthropic', 'ollama', 'groq'];
+        if (b.provider !== undefined && b.provider !== '' && !LLM_PROVIDERS.includes(String(b.provider))) {
+          res.status(400).json({ error: `provider must be one of: ${LLM_PROVIDERS.join(', ')}` });
+          return;
+        }
+        let baseURL: string | undefined;
+        if (typeof b.baseURL === 'string' && b.baseURL.trim()) {
+          try {
+            const u = new URL(b.baseURL.trim());
+            if (!['http:', 'https:'].includes(u.protocol)) throw new Error('protocol');
+            baseURL = u.toString();
+          } catch { res.status(400).json({ error: 'Base URL must be a valid http(s) address.' }); return; }
+        }
+        const apiKey = typeof b.apiKey === 'string' ? b.apiKey.trim() : '';
+        if (apiKey.length > 500) { res.status(400).json({ error: 'API key is too long.' }); return; }
+        llm = {
+          provider: b.provider ? (String(b.provider) as AgentLlmOptions['provider']) : undefined,
+          baseURL,
+          apiKey: apiKey || undefined,
+        };
+      }
+    } catch (err) {
+      res.status(400).json({ error: `Could not read this agent's AI settings: ${(err as Error).message}` });
       return;
     }
 
@@ -369,10 +845,16 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       const { createSiblingAgent } = await import('./agents.js');
       const result = await createSiblingAgent(configDir, {
         name,
-        model: typeof model === 'string' && model ? model : undefined,
+        model: modelToUse,
         provider,
+        llm,
       });
-      res.json(result);
+      // Bring it up straight away so the user can open it - no pm2, systemd or nginx step.
+      let started = false;
+      if (supervisor) {
+        try { started = (await supervisor.start(result.name, result.dir, result.port)).status === 'running'; } catch { /* reported via status */ }
+      }
+      res.json({ ...result, started, url: supervisor ? `/a/${result.name}/dashboard/` : null });
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
     } finally {
@@ -774,10 +1256,25 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     res.status(500).json({ error: err instanceof Error ? err.message : 'Internal Server Error' });
   });
 
+  expressApp.use('/api/auth', authRouter);
   expressApp.use('/api', api);
 }
 
 /** Never send a real secret value to the dashboard - see security/secretFields.ts for the field list. */
+/** Never send password hashes or the access token to the browser - only account emails. */
+function stripDashboardAuth(value: unknown): unknown {
+  if (!isPlainObject(value) || !isPlainObject(value.dashboard)) return value;
+  const { users, token, ...rest } = value.dashboard as Record<string, unknown>;
+  return {
+    ...value,
+    dashboard: {
+      ...rest,
+      ...(token ? { token: '[set]' } : {}),
+      ...(Array.isArray(users) ? { users: users.map((u) => ({ email: (u as DashboardUser).email })) } : {}),
+    },
+  };
+}
+
 export function redactSecrets(value: unknown): unknown {
   return mapSecretFields(value, () => '[set]');
 }

@@ -19,6 +19,8 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { validateWithinDir } from '../security/pathGuard.js';
+import { saveRuntimeConfig } from '../runtime/config.js';
+import { isPortFree, pingHealth, resolveCliEntry } from './supervisor.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +30,16 @@ export interface SiblingAgentConfig {
   name: string;
   dir: string;
   port: number | null;
+  /** Created from the dashboard (has the `.svara/managed` marker) - only these may be deleted from it. */
+  managed: boolean;
+}
+
+const MANAGED_MARKER = path.join('.svara', 'managed');
+
+/** Most sibling agents one runtime will host. Each is a Node process (~150 MB), so keep small VPSes safe. */
+export function maxSiblings(): number {
+  const n = Number(process.env.SVARA_MAX_SIBLINGS);
+  return Number.isInteger(n) && n > 0 ? n : 5;
 }
 
 export interface SiblingAgent extends SiblingAgentConfig {
@@ -35,7 +47,7 @@ export interface SiblingAgent extends SiblingAgentConfig {
 }
 
 /** Reads `port` out of each sibling folder's svara.config.json, without probing whether it's actually running (see listSiblingAgents() for that) - used both for the Agents list and for picking a free port when creating a new one. */
-async function readSiblingConfigs(currentDir: string): Promise<SiblingAgentConfig[]> {
+export async function readSiblingConfigs(currentDir: string): Promise<SiblingAgentConfig[]> {
   const parentDir = path.dirname(currentDir);
   let entries: string[];
   try {
@@ -52,24 +64,13 @@ async function readSiblingConfigs(currentDir: string): Promise<SiblingAgentConfi
       const stat = await fs.stat(dir);
       if (!stat.isDirectory()) continue;
       const raw = JSON.parse(await fs.readFile(path.join(dir, 'svara.config.json'), 'utf-8')) as { port?: unknown };
-      results.push({ name: entry, dir, port: typeof raw.port === 'number' ? raw.port : 3000 });
+      const managed = await fs.access(path.join(dir, MANAGED_MARKER)).then(() => true, () => false);
+      results.push({ name: entry, dir, port: typeof raw.port === 'number' ? raw.port : 3000, managed });
     } catch {
       continue; // not a svara project (no config, unreadable, bad JSON) - skip
     }
   }
   return results;
-}
-
-async function pingHealth(port: number): Promise<boolean> {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 800);
-    const res = await fetch(`http://localhost:${port}/health`, { signal: controller.signal });
-    clearTimeout(timer);
-    return res.ok;
-  } catch {
-    return false;
-  }
 }
 
 /** Sibling standalone-agent folders next to `currentDir`, each with a live running/not-running check. */
@@ -89,14 +90,24 @@ async function nextFreePort(currentDir: string): Promise<number> {
   }
 
   let candidate = 3000;
-  while (used.has(candidate)) candidate++;
+  while (used.has(candidate) || !(await isPortFree(candidate))) candidate++;
   return candidate;
+}
+
+/** Chat-model connection written into the new agent's config (the key is encrypted at rest by saveRuntimeConfig). */
+export interface AgentLlmOptions {
+  provider?: 'openai' | 'anthropic' | 'ollama' | 'groq';
+  baseURL?: string;
+  apiKey?: string;
+  apiKeyEnv?: string;
 }
 
 export interface CreateAgentOptions {
   name: string;
   model?: string;
   provider?: 'openai' | 'anthropic' | 'ollama';
+  /** Full LLM connection (provider/baseURL/apiKey). Lets a new agent use a different key or an OpenAI-compatible endpoint from the start. */
+  llm?: AgentLlmOptions;
 }
 
 export interface CreateAgentResult {
@@ -115,7 +126,7 @@ export interface CreateAgentResult {
  * already used by `currentDir` or any of its siblings.
  */
 export async function createSiblingAgent(currentDir: string, options: CreateAgentOptions): Promise<CreateAgentResult> {
-  const { name, model, provider } = options;
+  const { name, model, provider, llm } = options;
   if (!NAME_PATTERN.test(name)) {
     throw new Error('Agent name must be lowercase letters, numbers, and hyphens only, starting with a letter (e.g. "support-bot").');
   }
@@ -130,15 +141,21 @@ export async function createSiblingAgent(currentDir: string, options: CreateAgen
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
 
+  const existing = await readSiblingConfigs(currentDir);
+  if (existing.length >= maxSiblings()) {
+    throw new Error(`This runtime already hosts ${existing.length} agents (the limit is ${maxSiblings()}, to protect the server's memory). Remove one first.`);
+  }
+
   const port = await nextFreePort(currentDir);
 
   // This file is bundled alongside the CLI into dist/cli/index.js when
   // running via `svara start` - see cli/commands/new.ts's own SVARA_VERSION
   // resolution for the same __dirname-after-bundling reasoning.
-  const pkgRoot = path.resolve(__dirname, '../..');
-  const cliEntry = path.join(pkgRoot, 'dist/cli/index.js');
+  const cliEntry = resolveCliEntry() ?? path.join(path.resolve(__dirname, '../..'), 'dist/cli/index.js');
 
-  const args = ['new', name, '--standalone'];
+  // --no-install: managed siblings run on THIS install of SvaraJS, so there is nothing to download
+  // (and no way to end up on an older published version without the login screen).
+  const args = ['new', name, '--standalone', '--no-install'];
   if (provider) args.push('--provider', provider);
   await execFileAsync(process.execPath, [cliEntry, ...args], { cwd: parentDir, timeout: 5 * 60 * 1000 });
 
@@ -148,7 +165,16 @@ export async function createSiblingAgent(currentDir: string, options: CreateAgen
   const raw = JSON.parse(await fs.readFile(configFile, 'utf-8')) as Record<string, unknown>;
   raw.port = port;
   if (model) raw.model = model;
-  await fs.writeFile(configFile, `${JSON.stringify(raw, null, 2)}\n`, 'utf-8');
+  if (llm && Object.values(llm).some(Boolean)) {
+    raw.llm = Object.fromEntries(Object.entries(llm).filter(([, v]) => v));
+    // Goes through saveRuntimeConfig so the API key is encrypted with the new agent's own key file.
+    await saveRuntimeConfig(configFile, raw);
+  } else {
+    await fs.writeFile(configFile, `${JSON.stringify(raw, null, 2)}\n`, 'utf-8');
+  }
+
+  await fs.mkdir(path.join(targetDir, '.svara'), { recursive: true });
+  await fs.writeFile(path.join(targetDir, MANAGED_MARKER), `${new Date().toISOString()}\n`, 'utf-8');
 
   return {
     name,
@@ -156,4 +182,15 @@ export async function createSiblingAgent(currentDir: string, options: CreateAgen
     port,
     pm2Command: `cd ${targetDir} && pm2 start "npm start" --name ${name}`,
   };
+}
+
+/** Deletes a dashboard-created sibling's folder (config, memory, uploads). Refuses anything not created from the dashboard. */
+export async function deleteSiblingAgent(currentDir: string, name: string): Promise<void> {
+  if (!NAME_PATTERN.test(name)) throw new Error('Invalid agent name.');
+  const parentDir = path.dirname(currentDir);
+  const target = validateWithinDir(name, parentDir);
+  if (path.resolve(target) === path.resolve(currentDir)) throw new Error('You cannot delete the running agent.');
+  const managed = await fs.access(path.join(target, MANAGED_MARKER)).then(() => true, () => false);
+  if (!managed) throw new Error('Only agents created from the dashboard can be deleted here.');
+  await fs.rm(target, { recursive: true, force: true });
 }

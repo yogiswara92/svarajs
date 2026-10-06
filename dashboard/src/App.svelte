@@ -1,8 +1,11 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { api, ApiError } from './lib/api';
+  import { api, auth, authMode, sessionExpired, ApiError } from './lib/api';
   import Sidebar from './components/Sidebar.svelte';
   import AuthModal from './components/AuthModal.svelte';
+  import Login from './routes/Login.svelte';
+  import Setup from './routes/Setup.svelte';
+  import Account from './routes/Account.svelte';
   import Overview from './routes/Overview.svelte';
   import Agents from './routes/Agents.svelte';
   import Chat from './routes/Chat.svelte';
@@ -19,7 +22,7 @@
   import SettingsApi from './routes/settings/Api.svelte';
 
   const KNOWN_PAGES = new Set([
-    'overview', 'agents', 'chat', 'tools', 'skills', 'knowledge', 'mcp', 'memory', 'cron',
+    'account', 'overview', 'agents', 'chat', 'tools', 'skills', 'knowledge', 'mcp', 'memory', 'cron',
     'settings-general', 'settings-provider', 'settings-capabilities', 'settings-channels', 'settings-api',
   ]);
 
@@ -27,6 +30,67 @@
   let param = '';
   let mobileNavOpen = false;
   let agentName = '';
+
+  // 'loading' until we know whether this dashboard uses email+password login.
+  let ready = false;
+  let userEmail = '';
+  let loggedIn = true;
+  // First-run: no account exists yet. Shown instead of the token box so nobody needs SSH to get in.
+  let canSetup = false;
+  let showSetup = false;
+  let setupFromBanner = false;
+  let setupMethod = 'direct';
+  let setupMinutesLeft = 0;
+  let setupViaLog = false;
+  // Bumped after login so every page remounts and refetches with the new session.
+  let session = 0;
+
+  async function initAuth() {
+    try {
+      const { mode, canSetup: cs, setupMethod: sm, setupMinutesLeft: sl, setupViaLog: sv } = await auth.config();
+      authMode.set(mode);
+      canSetup = !!cs;
+      setupMethod = sm || 'direct';
+      setupMinutesLeft = sl || 0;
+      setupViaLog = !!sv;
+      // Token-protected and no account yet: offer account creation first (with a way to use the token instead).
+      if (mode === 'token' && canSetup) showSetup = true;
+      if (mode === 'password') {
+        const me = await auth.me();
+        loggedIn = me.authenticated;
+        userEmail = me.email || '';
+      }
+    } catch {
+      // Older runtime without /api/auth: behave as before (token modal on 401).
+    } finally {
+      ready = true;
+    }
+  }
+
+  async function onLoggedIn(event) {
+    authMode.set('password');
+    canSetup = false;
+    showSetup = false;
+    setupFromBanner = false;
+    userEmail = event.detail.email;
+    loggedIn = true;
+    sessionExpired.set(false);
+    session += 1;
+    void loadAgentName();
+  }
+
+  async function signOut() {
+    try { await auth.logout(); } catch { /* cookie may already be gone */ }
+    userEmail = '';
+    loggedIn = false;
+    agentName = '';
+  }
+
+  // A 401 from any call while in password mode (expired or revoked session) -> back to the login page.
+  $: if ($sessionExpired && $authMode === 'password') {
+    loggedIn = false;
+    userEmail = '';
+  }
 
   // Distinguishes browser tabs/sidebars when multiple standalone instances
   // (each its own agent) are open side by side - without this every tab
@@ -61,7 +125,8 @@
     if (!window.location.hash) window.location.hash = '#/overview';
     parseHash();
     window.addEventListener('hashchange', onHashChange);
-    void loadAgentName();
+    // While the setup page is showing, make no API calls: a 401 would pop the token box over it.
+    void initAuth().then(() => { if (loggedIn && !showSetup) void loadAgentName(); });
   });
 
   onDestroy(() => {
@@ -69,6 +134,21 @@
   });
 </script>
 
+{#if !ready}
+  <div class="boot"></div>
+{:else if showSetup && canSetup}
+  <Setup {agentName} method={setupMethod} minutesLeft={setupMinutesLeft} viaLog={setupViaLog} allowSkip={$authMode === 'token'} on:success={onLoggedIn} on:skip={() => { showSetup = false; void loadAgentName(); }} />
+{:else if $authMode === 'password' && !loggedIn}
+  <Login {agentName} on:success={onLoggedIn} />
+{:else}
+{#key session}
+<div class="root">
+{#if $authMode === 'none' && canSetup}
+  <div class="open-banner">
+    This dashboard is open to anyone who can reach it.
+    <button type="button" on:click={() => (showSetup = true)}>Secure it with a login</button>
+  </div>
+{/if}
 <div class="app-shell">
   <button
     type="button"
@@ -81,9 +161,11 @@
   {#if mobileNavOpen}
     <div class="mobile-nav-backdrop" role="presentation" on:click={() => (mobileNavOpen = false)}></div>
   {/if}
-  <Sidebar {page} {agentName} open={mobileNavOpen} />
+  <Sidebar {page} {agentName} {userEmail} onSignOut={signOut} open={mobileNavOpen} />
   <main class="content" class:full-bleed={page === 'chat'}>
-    {#if page === 'overview'}
+    {#if page === 'account' && userEmail}
+      <Account email={userEmail} />
+    {:else if page === 'overview'}
       <Overview />
     {:else if page === 'agents'}
       <Agents />
@@ -114,6 +196,9 @@
     {/if}
   </main>
 </div>
+</div>
+{/key}
+{/if}
 
 <AuthModal />
 
@@ -603,6 +688,36 @@
   .app-shell {
     display: flex;
     height: 100vh;
+  }
+
+  .root {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  .root .app-shell {
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+  .open-banner {
+    flex-shrink: 0;
+    padding: 0.45rem 1rem;
+    text-align: center;
+    font-size: 0.85rem;
+    background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .open-banner button {
+    margin-left: 0.5rem;
+    background: none;
+    border: none;
+    color: var(--primary-dark);
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: inherit;
+    text-decoration: underline;
   }
 
   .content {

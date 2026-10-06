@@ -13,7 +13,8 @@ import { svelte } from '@sveltejs/vite-plugin-svelte'
 const apiTarget = process.env.SVARA_DEV_API || 'http://localhost:3000'
 
 export default defineConfig({
-  base: '/dashboard/',
+  // Relative so the same build works at /dashboard/ and when a parent runtime proxies it under /a/<name>/dashboard/.
+  base: './',
   plugins: [svelte()],
   server: {
     port: 5185,

@@ -25,6 +25,8 @@ import { createCronTool } from '../cron/tools.js';
 import { ApprovalQueue } from '../security/approvalQueue.js';
 import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig, type SvaraRuntimeConfig } from './config.js';
 import { mountDashboard } from '../dashboard/serve.js';
+import { SiblingSupervisor, resolveCliEntry } from '../dashboard/supervisor.js';
+import path from 'path';
 import { McpManager } from '../mcp/manager.js';
 import { SVARAMIND_SERVER_ID, refreshSvaramindConfig } from '../integrations/svaramind.js';
 
@@ -205,7 +207,16 @@ export async function startStandaloneRuntime(
     });
   }
 
+  // A managed sibling is started by a parent runtime: it only answers to the parent's proxy
+  // (token + loopback) and goes away with it. A normal runtime supervises its own siblings.
+  const embeddedToken = process.env.SVARA_EMBEDDED_TOKEN || undefined;
+  const cliEntry = resolveCliEntry();
+  const supervisor = !embeddedToken && cliEntry && config.dashboard
+    ? new SiblingSupervisor({ cliEntry, stateDir: path.join(path.dirname(path.resolve(configPath)), '.svara') })
+    : undefined;
+
   const shutdown = async (): Promise<void> => {
+    await supervisor?.stopAll();
     scheduler?.stopAll();
     await mcpManager.disconnectAll();
     await closeBrowser();
@@ -241,6 +252,9 @@ export async function startStandaloneRuntime(
       mcpManager,
       restart,
       token: dashboardOpts.token,
+      users: dashboardOpts.users,
+      supervisor,
+      embeddedToken,
       configPath,
     });
   }
@@ -249,6 +263,27 @@ export async function startStandaloneRuntime(
   await app.listen(config.port);
 
   console.log(`[@yesvara/svara] ${config.name} is running as a standalone assistant.`);
+
+  if (supervisor) {
+    // Bring back the sibling agents that were running before this runtime (or the server) restarted.
+    void (async () => {
+      const { readSiblingConfigs } = await import('../dashboard/agents.js');
+      const wanted = new Set(supervisor.readDesired());
+      for (const sib of await readSiblingConfigs(path.dirname(path.resolve(configPath)))) {
+        if (!wanted.has(sib.name) || sib.port === null) continue;
+        try { await supervisor.start(sib.name, sib.dir, sib.port, { persist: false }); }
+        catch (err) { console.error(`[@yesvara/svara] Could not restart sibling "${sib.name}": ${(err as Error).message}`); }
+      }
+    })();
+  }
+
+  // A managed sibling must not outlive its parent (e.g. after a crash or kill -9).
+  const parentPid = Number(process.env.SVARA_PARENT_PID);
+  if (embeddedToken && Number.isInteger(parentPid) && parentPid > 1) {
+    setInterval(() => {
+      try { process.kill(parentPid, 0); } catch { void shutdown().then(() => process.exit(0)); }
+    }, 5000).unref();
+  }
   if (config.dashboard) {
     console.log(`[@yesvara/svara] Dashboard: http://localhost:${config.port}/dashboard`);
   }

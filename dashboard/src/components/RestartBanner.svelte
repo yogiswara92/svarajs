@@ -1,5 +1,5 @@
 <script>
-  import { api, ApiError } from '../lib/api';
+  import { api, ApiError, withBase } from '../lib/api';
 
   export let show = false;
 
@@ -29,7 +29,7 @@
   function waitForRestart() {
     const poll = setInterval(async () => {
       try {
-        const res = await fetch('/health');
+        const res = await fetch(withBase('/health'));
         if (res.ok) {
           clearInterval(poll);
           window.location.reload();

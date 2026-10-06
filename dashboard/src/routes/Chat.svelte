@@ -2,7 +2,7 @@
   import { onMount, afterUpdate } from 'svelte';
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
-  import { api, ApiError } from '../lib/api';
+  import { api, ApiError, withBase } from '../lib/api';
   import Icon from '../components/Icon.svelte';
 
   marked.setOptions({ gfm: true, breaks: true }); // gfm: tables/strikethrough; breaks: a single newline is <br>, matching how the agent actually writes replies
@@ -339,7 +339,7 @@
             {#if msg.role === 'assistant' && msg.attachments && msg.attachments.length > 0}
               <div class="attachments-list">
                 {#each msg.attachments as att}
-                  <a class="attachment-card" href={att.url} download={att.filename} target="_blank" rel="noopener">
+                  <a class="attachment-card" href={withBase(att.url)} download={att.filename} target="_blank" rel="noopener">
                     <Icon name="file" />
                     <span class="attachment-info">
                       <span class="attachment-name">{att.filename}</span>
