@@ -8,7 +8,28 @@
  * "Cannot find module" error.
  */
 
+/** Playwright refuses to run below this Node major - and its entry point calls process.exit(1) when you try. */
+const PLAYWRIGHT_MIN_NODE = 20;
+
+/**
+ * Why the browser tool can't run on this server, or null when it can.
+ * Checked BEFORE importing playwright: on Node < 20 merely importing it prints
+ * "Playwright requires Node.js 20 or higher" and kills the whole process
+ * (which took the dashboard down with a 502 the first time Capabilities opened).
+ */
+export function playwrightUnsupportedReason(nodeVersion: string = process.versions.node): string | null {
+  const major = Number(nodeVersion.split('.')[0]);
+  return major < PLAYWRIGHT_MIN_NODE
+    ? `The browser tool needs Node.js ${PLAYWRIGHT_MIN_NODE} or newer, but this server runs Node.js ${nodeVersion}. Upgrade Node.js on the server to use it.`
+    : null;
+}
+
 export async function loadPlaywright(): Promise<typeof import('playwright')> {
+  const unsupported = playwrightUnsupportedReason();
+  if (unsupported) {
+    // Plain wording: the LLM relays this to whoever asked, possibly over Telegram.
+    throw new Error(`Browser automation is not available on this server. ${unsupported} Tell the person you are talking to that the site admin has to upgrade Node.js; do not blame the target website.`);
+  }
   try {
     // Dynamic import - resolved at runtime only, so `playwright` being absent
     // doesn't break `npm install @yesvara/svara` or the build.
@@ -36,6 +57,7 @@ export async function loadPlaywright(): Promise<typeof import('playwright')> {
  * tool-call error the LLM has to explain to the user.
  */
 export async function isPlaywrightInstalled(): Promise<boolean> {
+  if (playwrightUnsupportedReason()) return false; // never import it on an unsupported Node: it exits the process
   try {
     await import('playwright');
     return true;

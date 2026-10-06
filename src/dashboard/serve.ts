@@ -41,7 +41,7 @@ import {
 } from './auth.js';
 import { mapSecretFields } from '../security/secretFields.js';
 import { validateWithinDir } from '../security/pathGuard.js';
-import { isPlaywrightInstalled } from '../tools/lazyDeps.js';
+import { isPlaywrightInstalled, playwrightUnsupportedReason } from '../tools/lazyDeps.js';
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import type { McpManager } from '../mcp/manager.js';
 import { searchMcpRegistry, resolveRegistryServer } from '../mcp/registry.js';
@@ -876,11 +876,17 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   const execFileAsync = promisify(execFile);
 
   api.get('/tools/browser/status', asyncRoute(async (_req, res) => {
-    res.json({ installed: await isPlaywrightInstalled(), installing: playwrightInstallInProgress });
+    res.json({
+      installed: await isPlaywrightInstalled(),
+      installing: playwrightInstallInProgress,
+      unsupportedReason: playwrightUnsupportedReason(),
+    });
   }));
 
   api.post('/tools/browser/install', asyncRoute(async (_req, res) => {
     if (playwrightInstallInProgress) { res.status(409).json({ error: 'An install is already in progress.' }); return; }
+    const unsupported = playwrightUnsupportedReason();
+    if (unsupported) { res.status(400).json({ error: unsupported }); return; }
     const cwd = opts.configPath ? path.dirname(opts.configPath) : process.cwd();
 
     playwrightInstallInProgress = true;

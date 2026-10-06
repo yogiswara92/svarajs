@@ -19,6 +19,7 @@
 ### Fixed
 - `crypto is not defined` on Node 18 (chat, web channel, approvals, delegation, cron). A test now fails if a source file
   uses `crypto.*` without importing it.
+- **Server crash on Node 18 when opening Settings > Capabilities.** The page checked for Playwright by importing it, and on Node < 20 Playwright calls `process.exit(1)`, taking the whole runtime down (a 502, then a crash loop). Playwright is now never imported on an unsupported Node: the browser tool reports a clear "needs Node.js 20" message, and Capabilities shows it instead of an install button.
 - The dashboard works behind a path prefix (relative asset base, API calls resolve against the page path).
 
 ### Security

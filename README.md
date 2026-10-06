@@ -307,7 +307,7 @@ container instead of the host:
 agent.addTool(createTerminalTool({ backend: 'docker', dockerContainer: 'svara-sandbox' }));
 ```
 
-Browser tools need the optional `playwright` peer dependency:
+Browser tools need the optional `playwright` peer dependency, **and Node.js 20 or newer** (SvaraJS itself runs on Node 18+; on Node 18 the browser tool and the Playwright search fallback report a clear "needs Node 20" error instead of loading Playwright, which would otherwise kill the process):
 
 ```bash
 npm install playwright && npx playwright install chromium

@@ -26,6 +26,7 @@
   // way and would otherwise only discover "playwright" is missing mid-reply,
   // confusingly, when it actually tries to use it. null = not checked yet.
   let playwrightInstalled = null;
+  let playwrightUnsupported = '';
   let playwrightInstalling = false;
   let playwrightInstallError = '';
 
@@ -33,6 +34,7 @@
     try {
       const res = await api.get('/api/tools/browser/status');
       playwrightInstalled = res.installed;
+      playwrightUnsupported = res.unsupportedReason || '';
     } catch {
       // Non-critical - just leave the warning unshown rather than blocking the page.
     }
@@ -192,7 +194,11 @@
             </label>
           </div>
         {/if}
-        {#if t.key === 'browser' && form.browser && playwrightInstalled === false}
+        {#if t.key === 'browser' && form.browser && playwrightUnsupported}
+          <div class="playwright-warning">
+            <p><Icon name="alert-triangle" /> {playwrightUnsupported}</p>
+          </div>
+        {:else if t.key === 'browser' && form.browser && playwrightInstalled === false}
           <div class="playwright-warning">
             <p>
               <Icon name="alert-triangle" /> Playwright isn't installed yet - the browser tool is on but will
