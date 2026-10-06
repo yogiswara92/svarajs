@@ -307,7 +307,7 @@ container instead of the host:
 agent.addTool(createTerminalTool({ backend: 'docker', dockerContainer: 'svara-sandbox' }));
 ```
 
-Browser tools need the optional `playwright` peer dependency, **and Node.js 20 or newer** (SvaraJS itself runs on Node 18+; on Node 18 the browser tool and the Playwright search fallback report a clear "needs Node 20" error instead of loading Playwright, which would otherwise kill the process). On a server with an older Node, **Settings > Capabilities > Install Node.js 20** adds a private Node 20 for this agent only (no root, other apps untouched), then restart the runtime. Install Playwright from the same page, or manually:
+Browser tools need the optional `playwright` peer dependency, **and Node.js 20 or newer** (SvaraJS itself runs on Node 18+; on Node 18 the browser tool and the Playwright search fallback report a clear "needs Node 20" error instead of loading Playwright, which would otherwise kill the process). On a server with an older Node, **Settings > Capabilities > Install Node.js 20** adds a private Node 20 for this agent only (no root, other apps untouched), then restart the runtime. The native database module is rebuilt for that Node, so from then on the agent (and `svara db:*`) always run on it; if you later delete `.svara/node`, run `npm rebuild better-sqlite3` to return to the system Node. Install Playwright from the same page, or manually:
 
 ```bash
 npm install playwright && npx playwright install chromium

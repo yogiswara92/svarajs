@@ -182,9 +182,22 @@ program
     }
   });
 
-program.parse(process.argv);
+// Commands that open the SQLite database must run on the same Node the native module was built for. When the
+// dashboard installed a private Node.js for this agent (see runtime/nodeRuntime.ts), hand over to it here too -
+// otherwise `svara db:*` on the old system Node would crash on the rebuilt module.
+async function main(): Promise<void> {
+  const sub = process.argv[2] ?? '';
+  if (sub.startsWith('db:')) {
+    const { shouldReexec, privateNodeWorks, runUnder } = await import('../runtime/nodeRuntime.js');
+    const candidate = shouldReexec({ configDir: process.cwd() });
+    if (candidate && (await privateNodeWorks(candidate))) process.exit(await runUnder(candidate));
+  }
+  program.parse(process.argv);
 
-// Show help if no command given
-if (!process.argv.slice(2).length) {
-  program.outputHelp();
+  // Show help if no command given
+  if (!process.argv.slice(2).length) {
+    program.outputHelp();
+  }
 }
+
+void main();
