@@ -45,12 +45,10 @@
     <img src="{base}svarajs-logo.png" alt="SvaraJS" class="brand-logo brand-logo-light" />
     <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="brand-logo brand-logo-dark" />
   </div>
-  <div class="agent-card">
+  <div class="agent-card" title="{agentName || 'Agent'} - online">
     <div class="avatar" style="background: {avatarBg}" aria-hidden="true">{initial}</div>
-    <div class="agent-meta">
-      <div class="agent-title" title={agentName}>{agentName || 'Agent'}</div>
-      <div class="agent-sub"><span class="dot"></span>Online</div>
-    </div>
+    <div class="agent-title">{agentName || 'Agent'}</div>
+    <span class="dot" aria-label="Online"></span>
   </div>
   {#if BASE_PATH}
     <a class="back-link" href="/dashboard/">&larr; Back to main agent</a>
@@ -134,24 +132,15 @@
     text-overflow: ellipsis;
   }
 
-  .agent-sub {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    margin-top: 0.1rem;
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--text-muted);
-  }
 
   .brand {
     padding: 0 0.5rem;
-    margin-bottom: 1.1rem;
+    margin-bottom: 0.9rem;
   }
 
   .brand-logo {
     display: block;
-    width: 150px;
+    width: 125px;
     max-width: 100%;
     height: auto;
   }
@@ -168,6 +157,46 @@
     .brand-logo-dark {
       display: block;
     }
+  }
+
+  /* The agent is context, not a second logo: a compact chip, like a workspace switcher. */
+  .agent-card {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.4rem 0.6rem;
+    margin: 0 0.15rem 1.1rem;
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: 0.65rem;
+  }
+
+  .avatar {
+    flex-shrink: 0;
+    width: 1.55rem;
+    height: 1.55rem;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .agent-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .agent-card .dot {
+    flex-shrink: 0;
   }
 
   nav {
