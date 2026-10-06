@@ -93,6 +93,7 @@ the full config reference.
 | **Live tool-call streaming** | The dashboard's Chat page shows "Process steps" filling in as tools run, not just after the whole reply is done - Telegram/Discord/Slack get the same effect via live message editing |
 | **Configurable embeddings** | RAG indexing has its own provider/key/base URL, separate from the chat model - OpenAI-compatible or local Ollama |
 | **Standalone runtime + dashboard** | `svara start` runs SvaraJS as a full omnichannel assistant with a responsive web UI - chat, knowledge, MCP, cron, API keys, settings, and more |
+| **Dashboard login + sibling agents** | Email + password login with first-time setup from the browser (no SSH), and extra agents created from the dashboard that run, restart and open under the same login - on any VPS, no root, pm2 or nginx edits |
 | **Secrets encrypted at rest** | Channel tokens, API keys, and other secrets in `svara.config.json` are AES-256-GCM encrypted, not plaintext |
 | **API key protection** | The public `POST /chat` endpoint can require a bearer token, separate from the dashboard's own admin token |
 | **Conversation memory** | Automatic per-session history, configurable window |
@@ -1125,17 +1126,17 @@ one with `svara new my-assistant --standalone`, or write it by hand:
 - `channels.telegram.allowedUserIds` - restrict the bot to specific Telegram user IDs (get one by messaging @userinfobot), e.g. `["123456789", "987654321"]`. Messages from anyone else are silently dropped, no reply sent. Unset means anyone can use the bot. Also settable from the dashboard's **Channels** page.
 - `mcpServers` - MCP (Model Context Protocol) servers to connect on boot, each `{ id, name, transport }` (`transport.type`: `stdio` with `command`/`args`/`env`, or `streamable-http`/`sse` with `url`/`headers`). Reconnects automatically on every `svara start`. See [MCP servers](#mcp-servers) below and the security note in [SECURITY.md](./SECURITY.md).
 - `cron[].deliverTo` - `{ channel: 'telegram' | 'whatsapp' | 'slack' | 'discord', target: string }` pushes a scheduled job's result to that channel (in addition to the server log) once it finishes running - `target` is channel-specific (a Telegram chat id, a Discord channel id, a Slack channel id/name, a WhatsApp phone number). Omit it to keep the job local-only.
-- `dashboard` - `true` for an unauthenticated dashboard (fine for `localhost`), or `{ "token": "..." }` to bearer-protect the `/api/*` routes (the dashboard UI will prompt for it once and remember it).
+- `dashboard` - `true` for an open dashboard (fine for `localhost` only), `{ "token": "..." }` for the older single shared bearer token, or `{ "users": [...] }` for **email + password login** (managed for you - see [Dashboard login & first-time setup](#dashboard-login--first-time-setup)). Tokens and password hashes are never sent to the browser.
 
 Once running, open `http://localhost:<port>/dashboard` (`<port>` defaults to
 `3000`) in a browser - that's the entire admin UI, no extra install or build
-step needed. If `dashboard.token` is set, it'll prompt for that token once
-and remember it.
+step needed. The first time, it asks you to create your login (see
+[below](#dashboard-login--first-time-setup)).
 
 - `POST /chat` - same request/response shape as library mode (see [Web API Reference](#web-api-reference)), optionally protected by `apiKey` above
 - `GET /dashboard` - the web UI:
   - **Chat** - talk to the agent directly, with a session sidebar (every past conversation is already persisted to SQLite - switch between them, start a new one, delete one). Tool calls stream in live via `POST /api/chat/stream` as they happen (a "Process steps" panel fills in progressively instead of only appearing once the whole reply is done), and any file the agent produced (via `send_file`) shows up as a download card. Markdown (tables, code, bold, links) renders properly, not as raw syntax
-  - **Agents** - each standalone instance only ever runs one agent, but this page scaffolds *sibling* ones (own folder, own `svara.config.json`, own port, next to this one) via `svara new ... --standalone` under the hood, then lists them with a live running/not-running check and a link into each one's own dashboard. Deliberately doesn't start the new agent's process itself - it hands back a ready-to-copy `pm2 start ...` command instead, so a sibling never ends up supervised differently (or not at all) from whatever already runs this one in production
+  - **Agents** - create extra agents that run on the same server, each with its own folder, settings, memory, channels and dashboard. They start automatically and are opened from this page - see [Sibling agents](#sibling-agents).
   - **General** / **AI Provider** / **Capabilities** / **Channels** / **API & Webhooks** - five editable settings pages (name/prompt/port; chat model + a separate Embeddings section for RAG; tool toggles + skills dir + learning memory + background auto-review + max tool-calling iterations; Telegram/WhatsApp/Slack/Discord as cards, each with a "Disconnect" button that actually clears stored credentials; the chat API key, the dashboard's own admin token, and a reference list of each connected channel's inbound webhook URL) - each writes only its own fields back to `svara.config.json`. Secrets are encrypted at rest (see [Security Model](#security-model)) and round-trip as `[set]` in the API - the dashboard never receives a real secret back once it's saved
   - **Tools** - active tools + pending command approvals (approve/deny); the Capabilities page also detects when Browser is enabled but the optional `playwright` package isn't actually installed and offers a one-click install
   - **Skills** - create/edit/delete, or install from the hub
@@ -1144,6 +1145,55 @@ and remember it.
   - **Memory** - edit `MEMORY.md`/`USER.md`
   - **Cron** - create/delete scheduled jobs with a friendly interval/day/time picker (or a raw cron expression), an optional name, optional skill scoping, and an optional "Deliver to" channel (only channels actually connected show up as options) so a job's result gets pushed there instead of just the server log (the scheduler is always available, even before the first job exists)
 - `GET /health` - health check
+
+### Dashboard login & first-time setup
+
+A dashboard can run shell commands through the agent, so it should never be open on a public server.
+SvaraJS has built-in email + password login:
+
+1. **First visit.** If no account exists yet, the dashboard shows **Create your account** instead of the dashboard.
+   - **Fresh install (no Telegram owner linked):** enter an email and a password (10+ characters) and you are in. This
+     page is open for **60 minutes after the server starts**, because until an account exists whoever opens the page
+     first could create it. Finish it right after you deploy.
+   - **After those 60 minutes, or if `channels.telegram.allowedUserIds` is set:** the page asks for a one-time 8-digit
+     code (valid 10 minutes, gone after 5 wrong guesses). It is sent to the allowed Telegram user(s) and also written to
+     the server log (`pm2 logs`, `journalctl -u <service>`, or your terminal). Setup is never a dead end.
+2. **Afterwards**, just email and password. Sessions last 7 days (HttpOnly cookie), failed logins are rate limited, and
+   changing a password signs that user out everywhere else.
+3. **Account** page: change your password, add or remove people. Anyone you add has the same access.
+
+Manage accounts from the server terminal too:
+
+```bash
+svara user add you@example.com        # prompts for a password (hidden)
+svara user passwd you@example.com
+svara user list
+svara user remove you@example.com     # refuses to remove the last account unless you pass --force
+```
+
+Accounts live in `svara.config.json` under `dashboard.users` as scrypt hashes and are read live, so no restart is needed.
+The older `dashboard.token` keeps working for scripts. Put the dashboard behind HTTPS (nginx, Caddy, Cloudflare) on a
+public server - session cookies are marked `Secure` automatically when the request arrives over HTTPS.
+
+### Sibling agents
+
+The **Agents** page creates more agents on the same server - for example a support bot next to your personal assistant -
+without touching pm2, systemd or nginx:
+
+- Each new agent gets its own folder next to this one (`../<name>`), its own `svara.config.json`, memory, skills,
+  channels (its own Telegram bot token, ...) and dashboard.
+- It starts as soon as it is created, **comes back after a restart** of the main runtime or the server, is restarted if it
+  crashes (it stops trying after repeated rapid crashes and shows **Crashed** with its log), and stops if the main
+  runtime disappears.
+- **Open** shows its dashboard under `/a/<name>/dashboard/` on the same address, behind the same login. The child itself
+  listens on `127.0.0.1` only and accepts a single private per-start token, so nothing else on the machine (or the
+  internet) can reach it.
+- **AI model connection:** reuse this agent's provider, endpoint and API key, or give the new agent its own provider,
+  base URL (any OpenAI-compatible service) and API key - stored encrypted in its config.
+- Start, Stop, Restart, Log and Delete (type the name to confirm; only for agents created from the dashboard).
+- Limit of **5** extra agents per runtime, since each is a separate Node process (about 150 MB). Raise it with
+  `SVARA_MAX_SIBLINGS`. Sibling agents run as the same OS user as the main one, so they are not isolated from each
+  other - for strict multi-tenant isolation use separate servers.
 
 Delegation (`delegate_task`) is always available in standalone mode, inheriting
 whichever tools you enabled above. Shut down gracefully with `Ctrl+C` - it
