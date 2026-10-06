@@ -41,6 +41,10 @@
 </script>
 
 <aside class="sidebar" class:open>
+  <div class="brand">
+    <img src="{base}svarajs-logo.png" alt="SvaraJS" class="brand-logo brand-logo-light" />
+    <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="brand-logo brand-logo-dark" />
+  </div>
   <div class="agent-card">
     <div class="avatar" style="background: {avatarBg}" aria-hidden="true">{initial}</div>
     <div class="agent-meta">
@@ -65,10 +69,6 @@
       <button type="button" class="signout" on:click={onSignOut}>Sign out</button>
     </div>
   {/if}
-  <div class="sidebar-footer">
-    <img src="{base}svarajs-logo.png" alt="SvaraJS" class="footer-logo footer-logo-light" />
-    <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="footer-logo footer-logo-dark" />
-  </div>
 </aside>
 
 <style>
@@ -144,23 +144,28 @@
     color: var(--text-muted);
   }
 
-  .footer-logo {
-    display: block;
-    width: 100px;
-    height: auto;
-    opacity: 0.85;
+  .brand {
+    padding: 0 0.5rem;
+    margin-bottom: 1.1rem;
   }
 
-  .footer-logo-dark {
+  .brand-logo {
+    display: block;
+    width: 150px;
+    max-width: 100%;
+    height: auto;
+  }
+
+  .brand-logo-dark {
     display: none;
   }
 
   @media (prefers-color-scheme: dark) {
-    .footer-logo-light {
+    .brand-logo-light {
       display: none;
     }
 
-    .footer-logo-dark {
+    .brand-logo-dark {
       display: block;
     }
   }

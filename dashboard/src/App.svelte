@@ -142,7 +142,7 @@
   <Login {agentName} on:success={onLoggedIn} />
 {:else}
 {#key session}
-<div class="root">
+<div class="root" style={$authMode === 'none' && canSetup ? '--banner-h: 2.5rem' : ''}>
 {#if $authMode === 'none' && canSetup}
   <div class="open-banner">
     This dashboard is open to anyone who can reach it.
@@ -749,7 +749,7 @@
       justify-content: center;
       gap: 4px;
       position: fixed;
-      top: 0.75rem;
+      top: calc(0.75rem + var(--banner-h, 0px));
       left: 0.75rem;
       z-index: 40;
       width: 2.5rem;
