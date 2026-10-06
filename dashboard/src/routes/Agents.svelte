@@ -24,7 +24,7 @@
     }
   }
 
-  onMount(load);
+  onMount(() => { load(); loadCalls(); });
 
   const STATUS_LABEL = { running: 'Running', starting: 'Starting...', stopped: 'Stopped', crashed: 'Crashed', external: 'Running (outside dashboard)' };
 
@@ -40,12 +40,33 @@
     try {
       await api.post(`/api/agents/${encodeURIComponent(name)}/${verb}`);
       await load();
+      loadCalls();
     } catch (e) {
       actionError = e instanceof ApiError ? e.message : `Could not ${verb} ${name}.`;
     } finally {
       busyName = '';
     }
   }
+
+  let calls = [];
+
+  async function loadCalls() {
+    try { calls = (await api.get('/api/agents/calls?limit=20')).calls ?? []; } catch { /* non-critical */ }
+  }
+
+  async function setOrchestration(agent, allowed) {
+    actionError = '';
+    try {
+      await api.post(`/api/agents/${encodeURIComponent(agent.name)}/orchestration`, { allowed });
+      agent.orchestration = allowed;
+      agents = agents;
+    } catch (e) {
+      actionError = e instanceof ApiError ? e.message : 'Could not change that setting.';
+      await load();
+    }
+  }
+
+  const when = (iso) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
   async function remove(name) {
     const typed = prompt(`This permanently deletes "${name}" and all its data (memory, uploads, settings).\n\nType the agent name to confirm:`);
@@ -184,6 +205,12 @@
           <div>
             <div class="list-item-title">{agent.name}</div>
             <div class="list-item-meta">{agent.dir}{agent.restarts ? ` · restarted ${agent.restarts}x` : ''}</div>
+            {#if canRun}
+              <label class="orch">
+                <input type="checkbox" checked={agent.orchestration} on:change={(e) => setOrchestration(agent, e.currentTarget.checked)} />
+                <span>The main agent may ask this agent for help</span>
+              </label>
+            {/if}
             {#if agent.status === 'crashed'}<div class="list-item-meta" style="color:var(--danger)">Stopped after repeated crashes{agent.lastExit ? ` (${agent.lastExit})` : ''}. Check the log, fix the settings, then Start.</div>{/if}
           </div>
           <div class="agent-row-right">
@@ -212,7 +239,44 @@
   </ul>
 {/if}
 
+{#if canRun && agents.length}
+  <h2 class="section-heading">Team activity</h2>
+  <p class="muted" style="margin-bottom:0.6rem">
+    The main agent can coordinate these agents: it sees who is available and can send one a task, then combine the reply.
+    Try: "ask the marketing agent for a caption, then have the programmer check the page".
+  </p>
+  {#if calls.length === 0}
+    <p class="muted">No calls yet.</p>
+  {:else}
+    <ul class="list">
+      {#each calls as c}
+        <li class="list-item">
+          <div class="agent-row">
+            <div style="min-width:0">
+              <div class="list-item-title">Asked <strong>{c.agent}</strong>
+                <span class="chip" class:success={c.ok}>{c.ok ? 'answered' : 'failed'}</span></div>
+              <div class="list-item-meta" style="white-space:pre-wrap;word-break:break-word">{c.message}</div>
+              {#if c.ok}<div class="list-item-meta" style="white-space:pre-wrap;word-break:break-word">Reply: {c.reply}</div>
+              {:else}<div class="list-item-meta" style="color:var(--danger)">{c.error}</div>{/if}
+            </div>
+            <div class="list-item-meta" style="flex-shrink:0;text-align:right">{when(c.at)}<br />{(c.ms / 1000).toFixed(1)}s</div>
+          </div>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+{/if}
+
 <style>
+  .orch {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin-top: 0.4rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
   .created-banner {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -240,7 +304,14 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    flex-wrap: wrap;
+    gap: 0.75rem 1rem;
+  }
+  /* The text side shrinks and wraps (long folder paths), so the buttons drop below instead of overflowing. */
+  .agent-row > :first-child {
+    flex: 1 1 260px;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .log {
     margin-top: 0.75rem;

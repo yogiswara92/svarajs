@@ -34,6 +34,7 @@ import type { SkillFrontmatter } from '../skills/types.js';
 import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/config.js';
 import type { AgentLlmOptions } from './agents.js';
 import { type SiblingSupervisor, pingHealth, readLogTail } from './supervisor.js';
+import { readCalls } from './orchestration.js';
 import {
   type DashboardUser, SESSION_COOKIE, LoginLimiter, authenticate, clearSessionCookie, clientIp,
   SetupCodes, createSessionToken, hashPassword, isSameOrigin, isValidEmail, loadSessionKey, normalizeEmail, parseCookies,
@@ -721,6 +722,8 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     name: string; dir: string; port: number | null; managed: boolean;
     status: 'running' | 'starting' | 'stopped' | 'crashed' | 'external';
     restarts: number; lastExit: string | null; url: string | null;
+    /** The main agent may call it with ask_agent. */
+    orchestration: boolean;
   };
 
   async function siblingViews(): Promise<SiblingView[]> {
@@ -736,6 +739,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         name: c.name, dir: c.dir, port: c.port, managed: c.managed, status,
         restarts: st?.restarts ?? 0, lastExit: st?.lastExit ?? null,
         url: proxied ? `/a/${c.name}/dashboard/` : null,
+        orchestration: supervisor ? supervisor.isOrchestrationAllowed(c.name) : false,
       };
     }));
   }
@@ -748,6 +752,19 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
 
   api.get('/agents', noNesting, asyncRoute(async (_req, res) => {
     res.json({ agents: await siblingViews(), canRun: !!supervisor });
+  }));
+
+  // Recent calls the main agent made to its team (ask_agent), newest first.
+  api.get('/agents/calls', noNesting, asyncRoute(async (req, res) => {
+    res.json({ calls: configDir ? readCalls(configDir, Number(req.query.limit) || 50) : [] });
+  }));
+
+  api.post('/agents/:name/orchestration', noNesting, express.json(), asyncRoute(async (req, res) => {
+    const sib = await findSibling(req.params.name);
+    if (!sib || !supervisor) { res.status(404).json({ error: 'No such agent.' }); return; }
+    if (typeof req.body?.allowed !== 'boolean') { res.status(400).json({ error: 'allowed (true/false) is required.' }); return; }
+    supervisor.setOrchestrationAllowed(sib.name, req.body.allowed);
+    res.json({ ok: true, allowed: req.body.allowed });
   }));
 
   api.post('/agents/:name/start', noNesting, asyncRoute(async (req, res) => {

@@ -16,6 +16,9 @@
 - Agent-first sidebar (avatar, name, status).
 - `SVARA_HOST` environment variable to bind the server to a specific interface.
 
+- **Main agent as orchestrator.** `list_agents` and `ask_agent` let the main agent delegate to its sibling agents and
+  combine their replies. Per-agent on/off switch, timeouts, rate and concurrency limits, replies treated as data, a
+  "Team activity" list on the Agents page, and no calls from siblings or delegated sub-agents (no chaining).
 - **Node.js 20 from the dashboard.** Settings > Capabilities can install a private Node.js 20 for the agent (downloaded from
   nodejs.org and checked against its published SHA-256, kept in `.svara/node`, no root, nothing else on the server changes),
   rebuild the native modules for it (with a database smoke test and automatic rollback), and `svara start` then runs on it

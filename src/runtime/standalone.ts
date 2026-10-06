@@ -27,6 +27,7 @@ import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig, type SvaraRuntimeC
 import { mountDashboard } from '../dashboard/serve.js';
 import { SiblingSupervisor, resolveCliEntry } from '../dashboard/supervisor.js';
 import { RESTART_EXIT_CODE } from './nodeRuntime.js';
+import { createOrchestrationTools } from '../dashboard/orchestration.js';
 import path from 'path';
 import { McpManager } from '../mcp/manager.js';
 import { SVARAMIND_SERVER_ID, refreshSvaramindConfig } from '../integrations/svaramind.js';
@@ -215,6 +216,12 @@ export async function startStandaloneRuntime(
   const supervisor = !embeddedToken && cliEntry && config.dashboard
     ? new SiblingSupervisor({ cliEntry, stateDir: path.join(path.dirname(path.resolve(configPath)), '.svara') })
     : undefined;
+
+  // The main agent can coordinate its sibling agents (list_agents / ask_agent). Siblings themselves get no such tools.
+  if (supervisor) {
+    createOrchestrationTools({ supervisor, configDir: path.dirname(path.resolve(configPath)), callerName: config.name })
+      .forEach((t) => agent.addTool(t));
+  }
 
   const shutdown = async (): Promise<void> => {
     await supervisor?.stopAll();

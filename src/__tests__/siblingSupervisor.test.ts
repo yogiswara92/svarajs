@@ -184,9 +184,22 @@ describe('dashboard proxy to managed siblings', () => {
   it('lists agents with their status and an Open url, and exposes the log', async () => {
     const list = await (await fetch(`${base}/api/agents`, { headers: { cookie } })).json();
     const sib = list.agents.find((a: { name: string }) => a.name === 'sib');
-    expect(sib).toMatchObject({ status: 'running', managed: true, url: '/a/sib/dashboard/' });
+    expect(sib).toMatchObject({ status: 'running', managed: true, url: '/a/sib/dashboard/', orchestration: true });
     const log = await (await fetch(`${base}/api/agents/sib/logs`, { headers: { cookie } })).json();
     expect(log.log).toContain('starting on 127.0.0.1');
+  });
+
+  it('lets the owner switch main-agent calls to an agent off and on, and lists recent calls', async () => {
+    const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST', headers: { cookie, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const get = async () => (await (await fetch(`${base}/api/agents`, { headers: { cookie } })).json()).agents.find((a: { name: string }) => a.name === 'sib');
+    expect((await post('/api/agents/sib/orchestration', { allowed: 'yes' })).status).toBe(400);
+    expect((await post('/api/agents/sib/orchestration', { allowed: false })).status).toBe(200);
+    expect((await get()).orchestration).toBe(false);
+    expect((await post('/api/agents/sib/orchestration', { allowed: true })).status).toBe(200);
+    expect((await get()).orchestration).toBe(true);
+    expect((await post('/api/agents/ghost/orchestration', { allowed: true })).status).toBe(404);
+    expect((await (await fetch(`${base}/api/agents/calls`, { headers: { cookie } })).json())).toEqual({ calls: [] });
+    expect((await fetch(`${base}/api/agents/calls`)).status).toBe(401);
   });
 
   it('stop and start work from the API, and deletion needs the typed name', async () => {

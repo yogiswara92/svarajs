@@ -1191,6 +1191,14 @@ without touching pm2, systemd or nginx:
 - **AI model connection:** reuse this agent's provider, endpoint and API key, or give the new agent its own provider,
   base URL (any OpenAI-compatible service) and API key - stored encrypted in its config.
 - Start, Stop, Restart, Log and Delete (type the name to confirm; only for agents created from the dashboard).
+- **Team work:** the main agent can coordinate them. It gets two tools, `list_agents` (who is running, and each
+  agent's role from its system prompt) and `ask_agent` (send one a self-contained task and get its reply), so you can
+  say "ask the marketing agent for a caption, then have the programmer check the page". It is an orchestrator, not a
+  chat room: only the main agent has these tools (siblings and delegated sub-agents do not, so calls never chain), each
+  sibling has an on/off switch on the Agents page ("The main agent may ask this agent for help"), calls time out after
+  150 s, are limited to 20 per 10 minutes and 3 at once, replies are handed back as data to use (not instructions to
+  follow), and every call is listed under **Team activity** (and in `.svara/agent-calls.jsonl`). The conversation with
+  each sibling continues across calls unless the main agent starts a fresh one.
 - Limit of **5** extra agents per runtime, since each is a separate Node process (about 150 MB). Raise it with
   `SVARA_MAX_SIBLINGS`. Sibling agents run as the same OS user as the main one, so they are not isolated from each
   other - for strict multi-tenant isolation use separate servers.

@@ -17,13 +17,13 @@ import type { SvaraAgent } from '../core/agent.js';
 import type { Tool } from '../types.js';
 
 export interface DelegateToolsOptions {
-  /** Tool names excluded from the child's inherited toolset. @default ['delegate_task', 'memory'] */
+  /** Tool names excluded from the child's inherited toolset. @default ['delegate_task', 'memory', 'ask_agent', 'list_agents'] */
   blockedTools?: string[];
   /** Override the child's model (e.g. a cheaper one for routine delegated work). */
   model?: string;
 }
 
-const DEFAULT_BLOCKED = ['delegate_task', 'memory'];
+const DEFAULT_BLOCKED = ['delegate_task', 'memory', 'ask_agent', 'list_agents'];
 
 type DelegateResult = { response: string } | { error: string };
 

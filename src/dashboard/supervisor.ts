@@ -132,26 +132,45 @@ export class SiblingSupervisor {
     return this.opts.stateDir ? path.join(this.opts.stateDir, 'siblings.json') : null;
   }
 
-  readDesired(): string[] {
+  private readState(): { running: string[]; denied: string[] } {
     const p = this.statePath();
-    if (!p) return [];
+    const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string') : []);
+    if (!p) return { running: [], denied: [] };
     try {
-      const data = JSON.parse(fs.readFileSync(p, 'utf-8')) as { running?: unknown };
-      return Array.isArray(data.running) ? data.running.filter((n): n is string => typeof n === 'string') : [];
+      const data = JSON.parse(fs.readFileSync(p, 'utf-8')) as { running?: unknown; denied?: unknown };
+      return { running: strings(data.running), denied: strings(data.denied) };
     } catch {
-      return [];
+      return { running: [], denied: [] };
     }
   }
 
-  private writeDesired(names: string[]): void {
+  private writeState(state: { running: string[]; denied: string[] }): void {
     const p = this.statePath();
     if (!p) return;
     try {
       fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(p, JSON.stringify({ running: [...new Set(names)].sort() }, null, 2));
+      fs.writeFileSync(p, JSON.stringify({ running: [...new Set(state.running)].sort(), denied: [...new Set(state.denied)].sort() }, null, 2));
     } catch {
       // best effort: a read-only state dir only costs us autostart after reboot
     }
+  }
+
+  readDesired(): string[] {
+    return this.readState().running;
+  }
+
+  private writeDesired(names: string[]): void {
+    this.writeState({ ...this.readState(), running: names });
+  }
+
+  /** May the main agent call this sibling with `ask_agent`? On unless switched off in the dashboard. */
+  isOrchestrationAllowed(name: string): boolean {
+    return !this.readState().denied.includes(name);
+  }
+
+  setOrchestrationAllowed(name: string, allowed: boolean): void {
+    const st = this.readState();
+    this.writeState({ ...st, denied: allowed ? st.denied.filter((n) => n !== name) : [...st.denied, name] });
   }
 
   private setDesired(name: string, on: boolean): void {
