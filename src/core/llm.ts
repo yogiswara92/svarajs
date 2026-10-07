@@ -69,6 +69,16 @@ export interface LLMAdapter {
   countTokens(text: string): number;
 }
 
+/** An adapter whose target can be replaced at runtime; everything holding it follows the swap. */
+export class SwitchableAdapter implements LLMAdapter {
+  constructor(private inner: LLMAdapter) {}
+  swap(next: LLMAdapter): void { this.inner = next; }
+  chat(messages: LLMMessage[], tools?: InternalTool[], temperature?: number): Promise<LLMResponse> {
+    return this.inner.chat(messages, tools, temperature);
+  }
+  countTokens(text: string): number { return this.inner.countTokens(text); }
+}
+
 // ─── OpenAI Adapter ──────────────────────────────────────────────────────────
 
 class OpenAIAdapter implements LLMAdapter {

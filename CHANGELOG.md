@@ -16,6 +16,12 @@
 - Agent-first sidebar (avatar, name, status).
 - `SVARA_HOST` environment variable to bind the server to a specific interface.
 
+- **Multiple chat models with a default.** Settings > AI Provider now keeps a list of saved models (name, model,
+  provider, base URL, API key, vision override) next to each other, with Add / Edit / Delete, a one-click **Test** (a tiny
+  request through that connection, so a wrong key or model name shows up now) and **Make default**. The default is applied
+  to the running agent immediately, in every channel, with no restart (`agent.useModel()`). Keys are stored encrypted and
+  never sent back to the browser. A config written before this keeps working and is shown as one "Default" model, migrated
+  the first time something is changed. New config keys: `llmProfiles`, `defaultLlm`; endpoints under `/api/llm`.
 - **Attachments in the dashboard Chat.** Attach images and files with the paperclip, drag and drop them, or paste an image
   from the clipboard (up to 5 files, 20 MB each, 24 MB per message). Files are saved under `uploads/web/<chat>/`, the agent
   is told where they are, and images are also shown to the model when it can read them. The page shows previews before

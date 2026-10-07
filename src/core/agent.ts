@@ -38,7 +38,7 @@
 import crypto from 'crypto';
 import EventEmitter from 'events';
 import type { RequestHandler, Express } from 'express';
-import { createAdapter, modelSupportsVision, resolveConfig, type LLMAdapter } from './llm.js';
+import { createAdapter, modelSupportsVision, resolveConfig, SwitchableAdapter } from './llm.js';
 import type {
   LLMConfig,
   LLMMessage,
@@ -249,8 +249,9 @@ export interface AgentConfig {
 export class SvaraAgent extends EventEmitter {
   readonly name: string;
 
-  private readonly llmConfig: LLMConfig;
-  private readonly llm: LLMAdapter;
+  private readonly baseLlmOptions: { temperature?: number; maxTokens?: number };
+  private llmConfig: LLMConfig;
+  private readonly llm: SwitchableAdapter;
   private readonly systemPrompt: string;
   private readonly tools: ToolRegistry;
   private readonly executor: ToolExecutor;
@@ -296,7 +297,8 @@ export class SvaraAgent extends EventEmitter {
       maxTokens: config.maxTokens,
       ...config.llm,
     });
-    this.llm = createAdapter(this.llmConfig);
+    this.llm = new SwitchableAdapter(createAdapter(this.llmConfig));
+    this.baseLlmOptions = { temperature: config.temperature, maxTokens: config.maxTokens };
 
     // Memory
     const memCfg = config.memory ?? true;
@@ -636,6 +638,17 @@ export class SvaraAgent extends EventEmitter {
   /** Model name currently in use (auto-detected provider). */
   get model(): string {
     return this.llmConfig.model;
+  }
+
+  /**
+   * Switches this agent to another model/connection while it runs - no restart. Everything that talks to the model
+   * (replies, context compression, background review) follows the swap, and a turn already in progress simply uses
+   * the new model for its next call. Throws (and changes nothing) if the new connection cannot be set up.
+   */
+  useModel(model: string, llm: Partial<LLMConfig> = {}): void {
+    const next = resolveConfig(model, { ...this.baseLlmOptions, ...llm });
+    this.llm.swap(createAdapter(next));
+    this.llmConfig = next;
   }
 
   /**

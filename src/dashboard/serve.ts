@@ -31,12 +31,13 @@ import type { ChannelName } from '../core/types.js';
 import type { CronScheduler } from '../cron/scheduler.js';
 import type { ApprovalQueue } from '../security/approvalQueue.js';
 import type { SkillFrontmatter } from '../skills/types.js';
-import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/config.js';
+import { agentLlmOptions, applyDefaultLlm, llmOfProfile, loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/config.js';
+import { addProfile, deleteProfile, setDefault, updateProfile, viewOf, type ProfileInput } from './llmProfiles.js';
 import type { AgentLlmOptions } from './agents.js';
 import { type SiblingSupervisor, pingHealth, readLogTail } from './supervisor.js';
 import { readCalls } from './orchestration.js';
 import { MAX_ATTACHMENT_BYTES, humanSize, messageWithAttachments, safeName, saveAttachment, toInlineImage, type SavedAttachment } from '../channels/attachments.js';
-import { modelSupportsVision } from '../core/llm.js';
+import { createAdapter, modelSupportsVision, resolveConfig } from '../core/llm.js';
 import type { LLMImage } from '../core/types.js';
 import {
   type DashboardUser, SESSION_COOKIE, LoginLimiter, authenticate, clearSessionCookie, clientIp,
@@ -652,9 +653,88 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     };
   }
 
+  // ── Saved chat models (Settings > AI Provider) ────────────────────────────────────────────
+  // Several connections side by side, one default. Switching the default (or editing the active one) is applied to the
+  // running agent right away; keys are encrypted at rest and never returned.
+  async function applyDefaultToAgent(): Promise<{ applied: boolean; warning?: string }> {
+    if (!opts.configPath) return { applied: false };
+    try {
+      const eff = await loadRuntimeConfig(opts.configPath);
+      const o = agentLlmOptions(eff.llm) ?? {};
+      opts.agent.useModel(eff.model, o);
+      return { applied: true };
+    } catch (err) {
+      return { applied: false, warning: `Saved, but the running agent could not switch: ${(err as Error).message}. Restart the runtime to apply it.` };
+    }
+  }
+
+  async function mutateProfiles(
+    res: Response,
+    fn: (raw: Record<string, unknown>) => { raw: Record<string, unknown>; id?: string } | { error: string },
+    touchesActive: (raw: Record<string, unknown>, next: Record<string, unknown>) => boolean,
+  ): Promise<void> {
+    if (!opts.configPath) { res.status(400).json({ error: 'No config file available on this runtime.' }); return; }
+    const current = await readRawConfig(opts.configPath);
+    const out = fn(current);
+    if ('error' in out) { res.status(400).json({ error: out.error }); return; }
+    await saveRuntimeConfig(opts.configPath, out.raw);
+    const saved = await readRawConfig(opts.configPath);
+    const applied = touchesActive(current, saved) ? await applyDefaultToAgent() : { applied: false };
+    res.json({ ...viewOf(saved), ...applied, id: out.id, activeModel: opts.agent.model });
+  }
+
+  api.get('/llm', asyncRoute(async (_req, res) => {
+    const raw = opts.configPath ? await readRawConfig(opts.configPath) : {};
+    res.json({ ...viewOf(raw), activeModel: opts.agent.model, canSwitch: !!opts.configPath });
+  }));
+
+  api.post('/llm/profiles', express.json(), asyncRoute(async (req, res) => {
+    await mutateProfiles(res, (raw) => addProfile(raw, (req.body ?? {}) as ProfileInput), () => false);
+  }));
+
+  api.put('/llm/profiles/:id', express.json(), asyncRoute(async (req, res) => {
+    // Editing the model that is currently the default changes what the agent runs on, so re-apply it.
+    await mutateProfiles(res, (raw) => updateProfile(raw, req.params.id, (req.body ?? {}) as ProfileInput),
+      (_before, after) => after.defaultLlm === req.params.id);
+  }));
+
+  api.delete('/llm/profiles/:id', asyncRoute(async (req, res) => {
+    await mutateProfiles(res, (raw) => deleteProfile(raw, req.params.id), () => false);
+  }));
+
+  api.post('/llm/default', express.json(), asyncRoute(async (req, res) => {
+    const id = typeof req.body?.id === 'string' ? req.body.id : '';
+    await mutateProfiles(res, (raw) => setDefault(raw, id), () => true);
+  }));
+
+  // Sends one tiny request through a saved model so a wrong key / base URL / model name shows up now, not mid-chat.
+  api.post('/llm/profiles/:id/test', asyncRoute(async (req, res) => {
+    if (!opts.configPath) { res.status(400).json({ error: 'No config file available on this runtime.' }); return; }
+    const eff = await loadRuntimeConfig(opts.configPath);
+    const profile = eff.llmProfiles?.find((p) => p.id === req.params.id)
+      ?? (!eff.llmProfiles?.length && req.params.id === 'default' ? { id: 'default', name: 'Default', model: eff.model, ...(eff.llm ?? {}) } : undefined);
+    if (!profile) { res.status(404).json({ error: 'No such model.' }); return; }
+    const conn = agentLlmOptions(llmOfProfile(profile as Parameters<typeof llmOfProfile>[0])) ?? {};
+    const started = Date.now();
+    try {
+      const adapter = createAdapter(resolveConfig(profile.model, { ...conn, timeout: 25_000 }));
+      const reply = await Promise.race([
+        adapter.chat([{ role: 'user', content: 'Reply with the single word OK.' }], undefined, 0),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('No answer within 25 seconds.')), 25_000)),
+      ]);
+      res.json({ ok: true, ms: Date.now() - started, reply: reply.content.slice(0, 80) });
+    } catch (err) {
+      const key = conn.apiKey;
+      const message = (err as Error).message || 'The request failed.';
+      res.json({ ok: false, ms: Date.now() - started, error: key ? message.split(key).join('[key]').slice(0, 300) : message.slice(0, 300) });
+    }
+  }));
+
   api.get('/chat/capabilities', asyncRoute(async (_req, res) => {
     const raw = opts.configPath ? await readRawConfig(opts.configPath).catch(() => ({})) : {};
-    const llm = isPlainObject((raw as Record<string, unknown>).llm) ? ((raw as Record<string, unknown>).llm as Record<string, unknown>) : {};
+    // The default saved model (if any) decides, like it does for the running agent.
+    const effective = applyDefaultLlm(raw as Parameters<typeof applyDefaultLlm>[0]) as { llm?: Record<string, unknown> };
+    const llm = effective.llm ?? {};
     res.json({
       vision: modelSupportsVision(opts.agent.model, typeof llm.vision === 'boolean' ? llm.vision : undefined),
       maxFiles: MAX_CHAT_FILES,

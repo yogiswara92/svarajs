@@ -23,7 +23,7 @@ import { createDelegateTools } from '../delegation/delegate.js';
 import { CronScheduler } from '../cron/scheduler.js';
 import { createCronTool } from '../cron/tools.js';
 import { ApprovalQueue } from '../security/approvalQueue.js';
-import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig, type SvaraRuntimeConfig } from './config.js';
+import { agentLlmOptions, loadRuntimeConfig, readRawConfig, saveRuntimeConfig, type SvaraRuntimeConfig } from './config.js';
 import { mountDashboard } from '../dashboard/serve.js';
 import { SiblingSupervisor, resolveCliEntry } from '../dashboard/supervisor.js';
 import { RESTART_EXIT_CODE } from './nodeRuntime.js';
@@ -61,12 +61,7 @@ export async function startStandaloneRuntime(
     contextWindow: config.contextWindow,
     maxIterations: config.maxIterations,
     knowledge: config.knowledge,
-    llm: config.llm ? {
-      provider: config.llm.provider,
-      baseURL: config.llm.baseURL,
-      apiKey: config.llm.apiKey || (config.llm.apiKeyEnv ? process.env[config.llm.apiKeyEnv] : undefined),
-      vision: config.llm.vision,
-    } : undefined,
+    llm: agentLlmOptions(config.llm),
     embeddings: config.embeddings,
     skillsDir: config.skillsDir,
     skillsGuard: config.skillsGuardAgentCreated ? {

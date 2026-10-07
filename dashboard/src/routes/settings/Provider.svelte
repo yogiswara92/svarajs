@@ -2,14 +2,7 @@
   import { onMount } from 'svelte';
   import { api, ApiError } from '../../lib/api';
   import RestartBanner from '../../components/RestartBanner.svelte';
-
-  const PROVIDERS = [
-    { value: '', label: 'Auto-detect from model name' },
-    { value: 'openai', label: 'OpenAI (or any OpenAI-compatible endpoint)' },
-    { value: 'anthropic', label: 'Anthropic' },
-    { value: 'ollama', label: 'Ollama (local)' },
-    { value: 'groq', label: 'Groq' },
-  ];
+  import LlmModels from '../../components/LlmModels.svelte';
 
   const EMBEDDINGS_PROVIDERS = [
     { value: 'openai', label: 'OpenAI (or any OpenAI-compatible embeddings endpoint)' },
@@ -23,24 +16,11 @@
   let saved = false;
 
   let form = {
-    model: '', llmVision: 'auto', llmProvider: '', llmBaseURL: '', llmApiKey: '', llmApiKeyEnv: '',
     embeddingsProvider: 'openai', embeddingsApiKey: '', embeddingsModel: '', embeddingsBaseURL: '',
   };
 
-  // A real env var name never looks like this - if it doesn't match, someone
-  // probably pasted an actual API key here instead of a variable name from .env.
-  $: apiKeyEnvLooksLikeARealKey = form.llmApiKeyEnv
-    && form.llmApiKeyEnv !== '[set]'
-    && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(form.llmApiKeyEnv);
-
   function populateForm(config) {
     form = {
-      model: config.model || '',
-      llmVision: config.llm?.vision === true ? 'yes' : config.llm?.vision === false ? 'no' : 'auto',
-      llmProvider: config.llm?.provider || '',
-      llmBaseURL: config.llm?.baseURL || '',
-      llmApiKey: config.llm?.apiKey || '',
-      llmApiKeyEnv: config.llm?.apiKeyEnv || '',
       embeddingsProvider: config.embeddings?.provider || 'openai',
       embeddingsApiKey: config.embeddings?.apiKey || '',
       embeddingsModel: config.embeddings?.model || '',
@@ -68,15 +48,8 @@
     saveError = '';
     saved = false;
     try {
+      // Chat models are managed in the panel above (their own endpoints); this form only saves embeddings.
       const payload = {
-        model: form.model,
-        llm: (form.llmProvider || form.llmBaseURL || form.llmApiKey || form.llmApiKeyEnv || form.llmVision !== 'auto') ? {
-          provider: form.llmProvider || undefined,
-          baseURL: form.llmBaseURL || undefined,
-          apiKey: form.llmApiKey || undefined,
-          apiKeyEnv: form.llmApiKeyEnv || undefined,
-          vision: form.llmVision === 'yes' ? true : form.llmVision === 'no' ? false : undefined,
-        } : undefined,
         embeddings: {
           provider: form.embeddingsProvider,
           apiKey: form.embeddingsApiKey || undefined,
@@ -97,9 +70,11 @@
 
 <h1>AI Provider</h1>
 <p class="note">
-  Which model the agent uses, and where to send requests for it. Saved to
-  <code>svara.config.json</code> - changes take effect after you restart the runtime.
+  Which models the agent can use, and where to send requests for them. Saved to
+  <code>svara.config.json</code>.
 </p>
+
+<LlmModels />
 
 {#if loading}
   <p class="muted">Loading...</p>
@@ -109,68 +84,6 @@
   <form class="form" on:submit|preventDefault={save}>
     {#if saveError}<p class="error-text">{saveError}</p>{/if}
     <RestartBanner show={saved} />
-
-    <label>
-      Model
-      <input bind:value={form.model} placeholder="gpt-4o-mini" required />
-      <span class="hint">Provider is auto-detected from this name unless overridden below.</span>
-    </label>
-    <label>
-      Provider
-      <select bind:value={form.llmProvider}>
-        {#each PROVIDERS as p}
-          <option value={p.value}>{p.label}</option>
-        {/each}
-      </select>
-    </label>
-    <label>
-      Custom base URL
-      <input bind:value={form.llmBaseURL} placeholder="https://openrouter.ai/api/v1" />
-      <span class="hint">
-        For OpenRouter or any other OpenAI-compatible endpoint: set Provider to "OpenAI" above and put
-        its base URL here (e.g. <code>https://openrouter.ai/api/v1</code>).
-      </span>
-    </label>
-    <label>
-      API key
-      <input type="password" bind:value={form.llmApiKey} placeholder="sk-..." autocomplete="off" />
-      <span class="hint">
-        Stored encrypted in <code>svara.config.json</code>. Takes priority over "API key env var" below if
-        both are set.
-      </span>
-    </label>
-    <label>
-      API key env var
-      <input bind:value={form.llmApiKeyEnv} placeholder="OPENROUTER_API_KEY" />
-      <span class="hint">
-        Alternative to the field above: name of an environment variable (in <code>.env</code>) holding the
-        key instead - only used when "API key" is blank. Leave both blank to use the provider's default
-        (e.g. <code>OPENAI_API_KEY</code>).
-      </span>
-      {#if apiKeyEnvLooksLikeARealKey}
-        <span class="error-text" style="margin-top: 0.4rem;">
-          This looks like an actual API key, not a variable name - it won't work as-is (the runtime
-          looks up <code>process.env[apiKeyEnv]</code>, so this would search for an env var literally
-          named that key). Use the "API key" field above instead, or put the real key in <code>.env</code>
-          as <code>OPENROUTER_API_KEY=&lt;your key&gt;</code> and put just <code>OPENROUTER_API_KEY</code>
-          here.
-        </span>
-      {/if}
-    </label>
-
-    <label>
-      Can this model read images?
-      <select bind:value={form.llmVision}>
-        <option value="auto">Automatic (guess from the model name)</option>
-        <option value="yes">Yes - send photos to the model</option>
-        <option value="no">No - text only</option>
-      </select>
-      <span class="hint">
-        Photos sent over Telegram are always saved on the server and the agent is told where. They are also shown to the
-        model directly only if it can see images. Models such as GPT-4o, Claude and Gemini can; many others cannot
-        and would reject the request, so leave this on Automatic unless your model is not detected.
-      </span>
-    </label>
 
     <h2 class="section-heading">Embeddings (RAG / Knowledge)</h2>
     <p class="hint" style="margin-bottom: 0.75rem;">

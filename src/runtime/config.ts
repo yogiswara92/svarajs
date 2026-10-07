@@ -54,6 +54,24 @@ const RuntimeConfigSchema = z.object({
   }).optional(),
 
   /**
+   * Saved chat models ("connections"): several providers/keys/models side by side, one of them the default. Managed from
+   * Settings > AI Provider, where picking another default takes effect immediately (no restart). When `defaultLlm`
+   * names one of these, its model and connection replace the top-level `model` / `llm` above, which remain the fallback
+   * (and what a config written before profiles existed keeps using).
+   */
+  llmProfiles: z.array(z.object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
+    name: z.string().min(1).max(80),
+    model: z.string().min(1),
+    provider: z.enum(['openai', 'anthropic', 'ollama', 'groq']).optional(),
+    baseURL: z.string().optional(),
+    apiKey: z.string().optional(),
+    apiKeyEnv: z.string().optional(),
+    vision: z.boolean().optional(),
+  })).max(20).optional(),
+  defaultLlm: z.string().optional(),
+
+  /**
    * Embedding provider for RAG (Knowledge page uploads, `knowledge` docs).
    * Separate from `llm` above - a chat-completions endpoint doesn't
    * necessarily also serve embeddings, so this needs its own provider/key.
@@ -184,6 +202,33 @@ const RuntimeConfigSchema = z.object({
 
 export type SvaraRuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
+type LlmProfile = NonNullable<SvaraRuntimeConfig['llmProfiles']>[number];
+
+/** The connection settings of a saved model, in the shape of the top-level `llm` block. */
+export function llmOfProfile(p: LlmProfile): NonNullable<SvaraRuntimeConfig['llm']> {
+  return Object.fromEntries(
+    Object.entries({ provider: p.provider, baseURL: p.baseURL, apiKey: p.apiKey, apiKeyEnv: p.apiKeyEnv, vision: p.vision })
+      .filter(([, v]) => v !== undefined && v !== ''),
+  ) as NonNullable<SvaraRuntimeConfig['llm']>;
+}
+
+/** Lets the default saved model (if one is selected and still exists) override the top-level `model` / `llm`. */
+export function applyDefaultLlm<T extends Pick<SvaraRuntimeConfig, 'model' | 'llm' | 'llmProfiles' | 'defaultLlm'>>(config: T): T {
+  const profile = config.llmProfiles?.find((p) => p.id === config.defaultLlm);
+  return profile ? { ...config, model: profile.model, llm: llmOfProfile(profile) } : config;
+}
+
+/** What `new SvaraAgent({ llm })` / `agent.useModel()` need: the key resolved from `apiKey` or the env var it names. */
+export function agentLlmOptions(llm: SvaraRuntimeConfig['llm']): { provider?: 'openai' | 'anthropic' | 'ollama' | 'groq'; baseURL?: string; apiKey?: string; vision?: boolean } | undefined {
+  if (!llm) return undefined;
+  return {
+    provider: llm.provider,
+    baseURL: llm.baseURL,
+    apiKey: llm.apiKey || (llm.apiKeyEnv ? process.env[llm.apiKeyEnv] : undefined),
+    vision: llm.vision,
+  };
+}
+
 export async function loadRuntimeConfig(configPath: string): Promise<SvaraRuntimeConfig> {
   const resolved = path.resolve(configPath);
 
@@ -215,7 +260,7 @@ export async function loadRuntimeConfig(configPath: string): Promise<SvaraRuntim
   // actually connect channels. A no-op for legacy plaintext values.
   const key = getOrCreateKey(configPath);
   try {
-    return mapSecretFields(result.data, (v) => decryptSecret(v, key)) as SvaraRuntimeConfig;
+    return applyDefaultLlm(mapSecretFields(result.data, (v) => decryptSecret(v, key)) as SvaraRuntimeConfig);
   } catch (err) {
     throw new Error(
       `[SvaraJS] Could not decrypt secrets in "${resolved}": ${(err as Error).message}\n` +
