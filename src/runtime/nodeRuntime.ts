@@ -78,13 +78,15 @@ export function shouldReexec(opts: { configDir: string; env?: NodeJS.ProcessEnv;
  */
 export function runUnder(nodeBin: string, argv: string[] = process.argv.slice(1)): Promise<number> {
   return new Promise((resolve) => {
+    let terminating = false; // we were asked to stop (systemd/pm2/Ctrl+C): the child going away is the expected outcome
     const launch = (): void => {
       const child = spawn(nodeBin, argv, { stdio: 'inherit', env: { ...process.env, SVARA_REEXEC: '1' } });
-      const forward = (sig: NodeJS.Signals) => () => { try { child.kill(sig); } catch { /* already gone */ } };
+      const forward = (sig: NodeJS.Signals) => () => { terminating = true; try { child.kill(sig); } catch { /* already gone */ } };
       const handlers = (['SIGINT', 'SIGTERM', 'SIGHUP'] as const).map((s) => [s, forward(s)] as const);
       for (const [s, h] of handlers) process.on(s, h);
       child.on('exit', (code, signal) => {
         for (const [s, h] of handlers) process.off(s, h);
+        if (terminating) { resolve(0); return; } // a clean stop must not look like a failure to the supervisor
         if (code === RESTART_EXIT_CODE) { launch(); return; }
         resolve(code ?? (signal ? 1 : 0));
       });

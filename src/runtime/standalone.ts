@@ -304,8 +304,16 @@ export async function startStandaloneRuntime(
     console.log(`[@yesvara/svara] Dashboard: http://localhost:${config.port}/dashboard`);
   }
 
-  process.once('SIGINT', () => { void shutdown().then(() => process.exit(0)); });
-  process.once('SIGTERM', () => { void shutdown().then(() => process.exit(0)); });
+  // systemd stops a whole cgroup by sending SIGTERM to every process in it - and the Node wrapper forwards the signal
+  // too - so the same signal can arrive twice. The second one must not kill the process mid-shutdown.
+  let shuttingDown = false;
+  const onStopSignal = (): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void shutdown().then(() => process.exit(0));
+  };
+  process.on('SIGINT', onStopSignal);
+  process.on('SIGTERM', onStopSignal);
 
   return { agent, app, scheduler, mcpManager, config, shutdown, restart };
 }

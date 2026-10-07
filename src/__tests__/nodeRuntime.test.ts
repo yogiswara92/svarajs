@@ -44,6 +44,21 @@ describe('runUnder (the Node wrapper)', () => {
     expect(await runUnder('/bin/sh', [script])).toBe(3);
   });
 
+  it('reports a clean exit (0) when it was asked to stop, even if the child dies by the signal', async () => {
+    const script = path.join(dir, 'term.sh');
+    fs.writeFileSync(script, '#!/bin/sh\ntrap \'exit 143\' TERM\nsleep 30 &\nwait\n');
+    const done = runUnder('/bin/sh', [script]);
+    await new Promise((r) => setTimeout(r, 400));
+    process.emit('SIGTERM'); // what systemd / pm2 / Ctrl+C deliver to the wrapper
+    expect(await done).toBe(0);
+  });
+
+  it('still reports the real exit code when it was NOT asked to stop', async () => {
+    const script = path.join(dir, 'exit143.sh');
+    fs.writeFileSync(script, '#!/bin/sh\nexit 143\n');
+    expect(await runUnder('/bin/sh', [script])).toBe(143);
+  });
+
   it('relaunches the child when it asks for a restart', async () => {
     const counter = path.join(dir, 'runs');
     const script = path.join(dir, 'restart.sh');
