@@ -92,6 +92,44 @@ describe('dashboard chat with attachments', () => {
     expect((await fetch(`${base}/api/chat/stream`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status).toBe(400);
   });
 
+  it('remembers a turn that is still running, so the page can show it again after navigation or a reload', async () => {
+    const tools: Array<(e: { sessionId: string; tools: string[] }) => void> = [];
+    agent.on.mockImplementation((ev: string, fn: (e: { sessionId: string; tools: string[] }) => void) => { if (ev === 'tool:call') tools.push(fn); });
+    let finish!: () => void;
+    process_.mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ response: 'selesai', sessionId: 'run1', toolsUsed: ['web_search'], iterations: 1, usage: {}, duration: 1 }); }));
+    (agent as unknown as { listSessions: () => unknown[] }).listSessions = () => [];
+    (agent as unknown as { getSessionMessages: () => unknown[] }).getSessionMessages = () => [];
+
+    const inFlight = fetch(`${base}/api/chat`, { method: 'POST', body: form({ message: 'tolong riset ini', sessionId: 'run1' }, [{ name: 'a.png', type: 'image/png', data: PNG }]) });
+    await vi.waitFor(async () => {
+      const r = await (await fetch(`${base}/api/chat/sessions/run1/messages`)).json();
+      expect(r.pending).not.toBeNull();
+    }, { timeout: 2000 });
+
+    tools.forEach((fn) => fn({ sessionId: 'run1', tools: ['web_search'] }));
+    tools.forEach((fn) => fn({ sessionId: 'other-session', tools: ['terminal_exec'] })); // another chat's tools must not leak in
+    const mid = await (await fetch(`${base}/api/chat/sessions/run1/messages`)).json();
+    expect(mid.messages).toEqual([]);                       // nothing saved yet: this is the bug the page used to hit
+    expect(mid.pending.message).toBe('tolong riset ini');   // the user's own words, not the attachment note
+    expect(mid.pending.files).toEqual([{ name: 'a.png', mimeType: 'image/png', sizeLabel: '1 KB' }]);
+    expect(mid.pending.tools).toEqual(['web_search']);
+
+    const list = (await (await fetch(`${base}/api/chat/sessions`)).json()).sessions;
+    expect(list[0]).toMatchObject({ sessionId: 'run1', pending: true, preview: 'tolong riset ini' });
+
+    finish();
+    expect((await inFlight).status).toBe(200);
+    expect((await (await fetch(`${base}/api/chat/sessions/run1/messages`)).json()).pending).toBeNull();
+    expect((await (await fetch(`${base}/api/chat/sessions`)).json()).sessions).toEqual([]);
+  });
+
+  it('forgets a running turn when the agent fails, instead of showing it forever', async () => {
+    process_.mockRejectedValue(new Error('model exploded'));
+    const res = await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'x', sessionId: 'boom' }) });
+    expect(res.status).toBe(500);
+    expect((await (await fetch(`${base}/api/chat/sessions/boom/messages`)).json()).pending).toBeNull();
+  });
+
   it('reports whether the model can read images (so the page can warn)', async () => {
     expect(await (await fetch(`${base}/api/chat/capabilities`)).json()).toEqual({ vision: true, maxFiles: 5, maxFileMB: 20, maxTotalMB: 24 });
     model = 'deepseek-v4-pro';

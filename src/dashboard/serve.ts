@@ -35,7 +35,7 @@ import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/
 import type { AgentLlmOptions } from './agents.js';
 import { type SiblingSupervisor, pingHealth, readLogTail } from './supervisor.js';
 import { readCalls } from './orchestration.js';
-import { MAX_ATTACHMENT_BYTES, messageWithAttachments, safeName, saveAttachment, toInlineImage, type SavedAttachment } from '../channels/attachments.js';
+import { MAX_ATTACHMENT_BYTES, humanSize, messageWithAttachments, safeName, saveAttachment, toInlineImage, type SavedAttachment } from '../channels/attachments.js';
 import { modelSupportsVision } from '../core/llm.js';
 import type { LLMImage } from '../core/types.js';
 import {
@@ -607,11 +607,11 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     });
   };
 
-  async function collectChatInput(req: Request, sessionId: string): Promise<{ message: string; images?: LLMImage[]; error?: string }> {
+  async function collectChatInput(req: Request, sessionId: string): Promise<{ message: string; images?: LLMImage[]; error?: string; text?: string; files?: SavedAttachment[] }> {
     const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
     const text = typeof req.body?.message === 'string' ? req.body.message : '';
     if (!text.trim() && !files.length) return { message: '', error: 'message is required.' };
-    if (!files.length) return { message: text };
+    if (!files.length) return { message: text, text, files: [] };
     const total = files.reduce((n, f) => n + f.size, 0);
     if (total > MAX_CHAT_TOTAL_BYTES) return { message: '', error: `The attachments add up to more than ${Math.round(MAX_CHAT_TOTAL_BYTES / 1024 / 1024)} MB. Send fewer or smaller files.` };
 
@@ -626,7 +626,30 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       const inline = toInlineImage(att, f.buffer);
       if (inline) images.push(inline);
     }
-    return { message: messageWithAttachments(text, saved), images: images.length ? images : undefined };
+    return { message: messageWithAttachments(text, saved), images: images.length ? images : undefined, text, files: saved };
+  }
+
+  // ── Turns in progress ──────────────────────────────────────────────────────────────────
+  // The agent saves a conversation turn only when it FINISHES, so while it works neither the question nor the
+  // (possibly long) reply exists in the database. Remember running turns here so the page can show them again after
+  // the user navigates away, reloads, or opens another tab.
+  interface RunningTurn { message: string; files: Array<{ name: string; mimeType: string; sizeLabel: string }>; startedAt: number; tools: string[] }
+  const running = new Map<string, RunningTurn>();
+
+  function beginTurn(sessionId: string, input: { text?: string; files?: SavedAttachment[] }): () => void {
+    const turn: RunningTurn = {
+      message: input.text ?? '',
+      files: (input.files ?? []).map((f) => ({ name: f.name, mimeType: f.mimeType, sizeLabel: humanSize(f.size) })),
+      startedAt: Date.now(),
+      tools: [],
+    };
+    running.set(sessionId, turn);
+    const onTool = (evt: { sessionId: string; tools: string[] }) => { if (evt.sessionId === sessionId) turn.tools.push(...evt.tools); };
+    opts.agent.on('tool:call', onTool);
+    return () => {
+      opts.agent.off('tool:call', onTool);
+      if (running.get(sessionId) === turn) running.delete(sessionId);
+    };
   }
 
   api.get('/chat/capabilities', asyncRoute(async (_req, res) => {
@@ -646,7 +669,13 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     try {
       const input = await collectChatInput(req, sessionId);
       if (input.error) { res.status(400).json({ error: input.error }); return; }
-      const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
+      const endTurn = beginTurn(sessionId, input);
+      let result;
+      try {
+        result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
+      } finally {
+        endTurn();
+      }
       res.json({
         response: result.response,
         sessionId: result.sessionId,
@@ -676,7 +705,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     // every other concurrent session sharing this same agent instance.
     const sessionId = typeof reqSessionId === 'string' && reqSessionId ? reqSessionId : crypto.randomUUID();
 
-    let input: { message: string; images?: LLMImage[]; error?: string };
+    let input: { message: string; images?: LLMImage[]; error?: string; text?: string; files?: SavedAttachment[] };
     try {
       input = await collectChatInput(req, sessionId);
     } catch (err) {
@@ -695,6 +724,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       res.write(`${JSON.stringify({ type: 'tool_call', tools: evt.tools })}\n`);
     };
     opts.agent.on('tool:call', onToolCall);
+    const endTurn = beginTurn(sessionId, input);
 
     try {
       const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
@@ -712,17 +742,28 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     } catch (err) {
       res.write(`${JSON.stringify({ type: 'error', error: (err as Error).message })}\n`);
     } finally {
+      endTurn();
       opts.agent.off('tool:call', onToolCall);
       res.end();
     }
   }));
 
   api.get('/chat/sessions', (_req, res) => {
-    res.json({ sessions: opts.agent.listSessions(50) });
+    const saved = opts.agent.listSessions(50).map((s) => ({ ...s, pending: running.has(s.sessionId) }));
+    // A brand-new chat whose first reply is still being written is not in the database yet - list it anyway.
+    const fresh = [...running.entries()]
+      .filter(([id]) => !saved.some((s) => s.sessionId === id))
+      .map(([id, t]) => ({ sessionId: id, preview: t.message || '(attachment)', messageCount: 1, lastMessageAt: Math.floor(t.startedAt / 1000), pending: true }));
+    res.json({ sessions: [...fresh, ...saved] });
   });
 
   api.get('/chat/sessions/:id/messages', (req, res) => {
-    res.json({ messages: opts.agent.getSessionMessages(req.params.id) });
+    const turn = running.get(req.params.id);
+    res.json({
+      messages: opts.agent.getSessionMessages(req.params.id),
+      // The turn still being worked on, if any: the user's message and the tools used so far.
+      pending: turn ? { message: turn.message, files: turn.files, startedAt: turn.startedAt, tools: [...turn.tools] } : null,
+    });
   });
 
   api.delete('/chat/sessions/:id', asyncRoute(async (req, res) => {

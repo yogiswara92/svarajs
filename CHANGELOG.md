@@ -39,6 +39,11 @@
   wrapper, or the parent of a sibling agent) instead of spawning a competing copy.
 
 ### Fixed
+- **Chat lost the question and the reply being written when you left the page.** The conversation state lived in the
+  page component, and the server saved a turn only when it finished. The state now lives in `lib/chat.js` (the reply keeps
+  streaming while another page is open, drafts are kept), and the server reports the turn still running (`pending` in
+  `GET /api/chat/sessions/:id/messages`, `pending: true` in the session list) so it also survives a reload or a second
+  tab. The session list shows "working..." for chats that are still being answered.
 - `crypto is not defined` on Node 18 (chat, web channel, approvals, delegation, cron). A test now fails if a source file
   uses `crypto.*` without importing it.
 - **Server crash on Node 18 when opening Settings > Capabilities.** The page checked for Playwright by importing it, and on Node < 20 Playwright calls `process.exit(1)`, taking the whole runtime down (a 502, then a crash loop). Playwright is now never imported on an unsupported Node: the browser tool reports a clear "needs Node.js 20" message, and Capabilities shows it instead of an install button.

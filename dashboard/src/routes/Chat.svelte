@@ -4,10 +4,9 @@
   import DOMPurify from 'dompurify';
   import { api, ApiError, withBase } from '../lib/api';
   import Icon from '../components/Icon.svelte';
+  import { chat, draft, loadSessions, selectSession, newSession as startNewChat, forgetThread, sendMessage } from '../lib/chat';
 
   marked.setOptions({ gfm: true, breaks: true }); // gfm: tables/strikethrough; breaks: a single newline is <br>, matching how the agent actually writes replies
-
-  const SESSION_STORAGE_KEY = 'svara_chat_session_id';
 
   const TOOL_ICONS = {
     terminal_exec: 'terminal',
@@ -32,16 +31,27 @@
     return 'wrench';
   }
 
-  let sessionId = (typeof localStorage !== 'undefined' && localStorage.getItem(SESSION_STORAGE_KEY)) || crypto.randomUUID();
-  let messages = [];
-  let input = '';
-  let sending = false;
+  // Conversation state lives in lib/chat.js so it survives leaving this page: a reply that is still being written
+  // keeps arriving while another page is open, and is shown again when you come back (or after a reload).
+  $: sessionId = $chat.sessionId;
+  $: thread = $chat.threads[sessionId] || { messages: [], sending: false, error: '', loading: false };
+  $: messages = thread.messages;
+  $: sending = thread.sending;
+  $: loadingHistory = thread.loading;
+  $: sessions = $chat.sessions;
+  $: sessionsLoading = $chat.sessionsLoading;
+  $: sessionsError = $chat.sessionsError;
+  $: runningIds = new Set(Object.entries($chat.threads).filter(([, t]) => t.sending).map(([id]) => id));
+
+  // The draft (typed text and queued files) is kept too, so a half-written message is not lost when you navigate away.
+  let input = draft.input;
   let sendError = '';
   let scrollEl;
-  let loadingHistory = false;
+  $: draft.input = input;
 
   // Attachments queued for the next message (images/files). Previews of images use object URLs.
-  let attached = [];
+  let attached = draft.attached;
+  $: draft.attached = attached;
   let capabilities = { vision: false, maxFiles: 5, maxFileMB: 20, maxTotalMB: 24 };
   let fileInput;
   let dragDepth = 0;
@@ -83,23 +93,8 @@
     addFiles(e.dataTransfer?.files);
   }
 
-  // The agent receives a text note listing the saved files; history shows them as chips instead of raw text.
-  function splitAttachmentNote(content) {
-    const marker = '\n\n[Attachments from the user, saved on the server.';
-    const i = (content || '').indexOf(marker);
-    if (i < 0) return { text: content, files: [] };
-    const files = content.slice(i).split('\n').slice(3).flatMap((line) => {
-      const m = /^- (.+) \(([^,()]+), ([^)]+)\): (.+)$/.exec(line);
-      return m ? [{ name: m[1], mimeType: m[2], sizeLabel: m[3] }] : [];
-    });
-    return { text: content.slice(0, i), files };
-  }
-
   $: needsVisionNote = attached.some((a) => a.file.type.startsWith('image/')) && !capabilities.vision;
 
-  let sessions = [];
-  let sessionsLoading = true;
-  let sessionsError = '';
   let deletingSessionId = null;
   let sessionSidebarOpen = false;
 
@@ -155,56 +150,16 @@
     if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
   });
 
-  async function loadSessions() {
-    sessionsLoading = true;
-    try {
-      const res = await api.get('/api/chat/sessions');
-      sessions = res.sessions || [];
-      sessionsError = '';
-    } catch (e) {
-      sessionsError = e instanceof ApiError ? e.message : 'Failed to load sessions.';
-    } finally {
-      sessionsLoading = false;
-    }
-  }
-
-  async function loadHistory(id) {
-    loadingHistory = true;
-    try {
-      const res = await api.get(`/api/chat/sessions/${id}/messages`);
-      messages = (res.messages || [])
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({
-          role: m.role,
-          ...(m.role === 'user' ? (() => { const { text, files } = splitAttachmentNote(m.content); return { content: text, files }; })() : { content: m.content }),
-          toolsUsed: m.metadata?.toolsUsed || [],
-          iterations: m.metadata?.iterations,
-          retrievedDocuments: m.metadata?.retrievedDocuments || [],
-          attachments: m.metadata?.attachments || [],
-        }));
-    } catch (e) {
-      sendError = e instanceof ApiError ? e.message : 'Failed to load this session\'s history.';
-    } finally {
-      loadingHistory = false;
-    }
-  }
-
-  onMount(async () => {
+  onMount(() => {
     loadCapabilities();
-    await loadSessions();
-    if (sessions.some((s) => s.sessionId === sessionId)) {
-      await loadHistory(sessionId);
-    }
+    loadSessions();
+    selectSession($chat.sessionId); // loads from the server only if this conversation is not already in memory
   });
 
-  $: if (typeof localStorage !== 'undefined') localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
-
-  async function switchSession(id) {
+  function switchSession(id) {
     sessionSidebarOpen = false;
-    if (id === sessionId && messages.length > 0) return;
-    sessionId = id;
     sendError = '';
-    await loadHistory(id);
+    selectSession(id);
   }
 
   async function send() {
@@ -214,77 +169,13 @@
     input = '';
     attached = [];
     sendError = '';
-    messages = [...messages, {
-      role: 'user',
-      content: text,
-      files: toSend.map((a) => ({ name: a.file.name, mimeType: a.file.type, sizeLabel: formatFileSize(a.file.size), url: a.url })),
-    }];
-    sending = true;
-
-    // A live placeholder, filled in as tool_call events arrive - this is
-    // what makes "Process steps" grow in real time instead of only
-    // appearing once the whole (often 20-30s) agent turn is done.
-    const liveMsg = { role: 'assistant', content: '', toolsUsed: [], iterations: 0, retrievedDocuments: [], attachments: [], streaming: true };
-    messages = [...messages, liveMsg];
-
-    try {
-      let res;
-      if (toSend.length) {
-        const form = new FormData();
-        form.append('message', text);
-        form.append('sessionId', sessionId);
-        for (const a of toSend) form.append('files', a.file, a.file.name);
-        res = await api.postStreamForm('/api/chat/stream', form);
-      } else {
-        res = await api.postStream('/api/chat/stream', { message: text, sessionId });
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let sawDone = false;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const evt = JSON.parse(line);
-          const last = messages[messages.length - 1];
-
-          if (evt.type === 'tool_call') {
-            last.toolsUsed = [...last.toolsUsed, ...evt.tools];
-            last.iterations = last.iterations + 1;
-            messages = messages;
-          } else if (evt.type === 'done') {
-            sawDone = true;
-            sessionId = evt.sessionId || sessionId;
-            last.content = evt.response;
-            last.toolsUsed = evt.toolsUsed || [];
-            last.retrievedDocuments = evt.retrievedDocuments || [];
-            last.attachments = evt.attachments || [];
-            last.iterations = evt.iterations;
-            last.duration = evt.duration;
-            last.streaming = false;
-            messages = messages;
-          } else if (evt.type === 'error') {
-            throw new Error(evt.error);
-          }
-        }
-      }
-
-      if (!sawDone) throw new Error('Connection closed before the agent finished responding.');
-      await loadSessions();
-    } catch (e) {
-      sendError = e instanceof ApiError ? e.message : (e?.message || 'Failed to send message.');
-      messages = messages.slice(0, -2); // the live reply placeholder and the user message that never got an answer
-      input = text; // give the text back so nothing typed is lost
+    const result = await sendMessage({ text, files: toSend });
+    if (!result.ok) {
+      // Give back what was typed: nothing is lost when a send fails.
+      draft.input = text;
+      draft.attached = toSend;
+      input = text;
       attached = toSend;
-    } finally {
-      sending = false;
     }
   }
 
@@ -296,8 +187,7 @@
   }
 
   function newSession() {
-    sessionId = crypto.randomUUID();
-    messages = [];
+    startNewChat();
     sendError = '';
     sessionSidebarOpen = false;
   }
@@ -308,10 +198,10 @@
     deletingSessionId = id;
     try {
       await api.delete(`/api/chat/sessions/${id}`);
-      sessions = sessions.filter((s) => s.sessionId !== id);
+      forgetThread(id);
       if (id === sessionId) newSession();
     } catch (e) {
-      sessionsError = e instanceof ApiError ? e.message : 'Failed to delete session.';
+      sendError = e instanceof ApiError ? e.message : 'Failed to delete session.';
     } finally {
       deletingSessionId = null;
     }
@@ -347,7 +237,9 @@
           on:click={() => switchSession(s.sessionId)}
         >
           <span class="session-item-preview">{stripMarkdown(s.preview) || '(empty)'}</span>
-          <span class="session-item-meta">{formatSessionTime(s.lastMessageAt)} - {s.messageCount} msg{s.messageCount !== 1 ? 's' : ''}</span>
+          <span class="session-item-meta">
+            {#if s.pending || runningIds.has(s.sessionId)}<span class="working"><span class="working-dot"></span>working...</span>{:else}{formatSessionTime(s.lastMessageAt)} - {s.messageCount} msg{s.messageCount !== 1 ? 's' : ''}{/if}
+          </span>
           <span
             class="session-item-delete"
             role="button"
@@ -464,7 +356,7 @@
       {/each}
     </div>
 
-    {#if sendError}<p class="error-text chat-error">{sendError}</p>{/if}
+    {#if sendError || thread.error}<p class="error-text chat-error">{sendError || thread.error}</p>{/if}
 
     {#if attached.length > 0}
       <div class="attach-strip">
@@ -501,6 +393,9 @@
 
 <style>
   .chat-main { position: relative; }
+  .working { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--primary-dark); font-weight: 600; }
+  .working-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; background: var(--primary); animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
   .drop-overlay {
     position: absolute;
     inset: 0;
