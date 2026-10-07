@@ -58,7 +58,7 @@ describe('TelegramChannel attachments', () => {
     expect(downloads[0]).toBe('https://api.telegram.org/file/bottok/photos/file_7.jpg');
     const msg = receive.mock.calls[0][0];
     expect(msg.text).toMatch(/^apa ini\?/);
-    const saved = /saved on the server at: (\S+)\./.exec(msg.text)![1];
+    const saved = /\): (\S+)$/m.exec(msg.text)![1];
     expect(saved.startsWith(path.join(dir, '555'))).toBe(true);
     expect(fs.readFileSync(saved).equals(JPEG)).toBe(true);
     expect(msg.images).toEqual([{ mimeType: 'image/jpeg', base64: JPEG.toString('base64') }]);
@@ -73,14 +73,14 @@ describe('TelegramChannel attachments', () => {
     const { receive } = await run(update({ caption: 'ringkas ya', document: { file_id: 'd1', file_name: 'Laporan Q3.pdf', mime_type: 'application/pdf', file_size: 2048 } }), { fileBytes: Buffer.from('%PDF-1.4 fake') });
     const msg = receive.mock.calls[0][0];
     expect(msg.text).toContain('ringkas ya');
-    expect(msg.text).toContain('"Laporan Q3.pdf"');
-    expect(msg.text).toMatch(/Laporan_Q3\.pdf\./);
+    expect(msg.text).toContain('- Laporan Q3.pdf (application/pdf,');
+    expect(msg.text).toMatch(/Laporan_Q3\.pdf$/m);
     expect(msg.images).toBeUndefined();
   });
 
   it('never lets a file name escape the download folder', async () => {
     const { receive } = await run(update({ document: { file_id: 'd', file_name: '../../etc/passwd', mime_type: 'text/plain', file_size: 10 } }), { fileBytes: Buffer.from('x') });
-    const saved = /saved on the server at: (\S+)\./.exec(receive.mock.calls[0][0].text)![1];
+    const saved = /\): (\S+)$/m.exec(receive.mock.calls[0][0].text)![1];
     expect(path.dirname(saved)).toBe(path.join(dir, '555'));
     expect(path.basename(saved)).toMatch(/passwd$/);
   });

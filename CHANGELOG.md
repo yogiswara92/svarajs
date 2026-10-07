@@ -16,6 +16,12 @@
 - Agent-first sidebar (avatar, name, status).
 - `SVARA_HOST` environment variable to bind the server to a specific interface.
 
+- **Attachments in the dashboard Chat.** Attach images and files with the paperclip, drag and drop them, or paste an image
+  from the clipboard (up to 5 files, 20 MB each, 24 MB per message). Files are saved under `uploads/web/<chat>/`, the agent
+  is told where they are, and images are also shown to the model when it can read them. The page shows previews before
+  sending, chips in the conversation and in history, and warns when the model cannot see images. `POST /api/chat` and
+  `/api/chat/stream` accept multipart (`message`, `sessionId`, `files`) as well as JSON; `GET /api/chat/capabilities`
+  reports the limits and vision support.
 - **Photos and documents over Telegram.** The bot used to drop every message without text (photos, files) in silence.
   It now downloads them (up to Telegram's 20 MB bot limit) into `uploads/telegram/<chat>/`, uses the caption as the
   message, and tells the agent where the file is so its tools can read it. Images are also shown to the model directly

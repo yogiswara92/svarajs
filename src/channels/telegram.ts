@@ -7,6 +7,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { MAX_ATTACHMENT_BYTES, humanSize, messageWithAttachments, saveAttachment, toInlineImage } from './attachments.js';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
 import type { IncomingMessage, ChannelName, Attachment, LLMImage } from '../core/types.js';
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
@@ -23,12 +24,6 @@ export interface TelegramChannelConfig {
   /** Where photos/documents the user sends are saved (default `./uploads/telegram`). Each chat gets its own subfolder. */
   downloadDir?: string;
 }
-
-/** Telegram bots can only download files up to 20 MB (getFile limit). */
-const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
-/** Images are also shown to vision models inline; keep that part small (the file itself is still saved). */
-const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
-const INLINE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
 interface TGFileInfo { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
 interface TGMessage {
@@ -49,11 +44,6 @@ const UNSUPPORTED_MEDIA: Array<[keyof TGMessage, string]> = [
   ['voice', 'voice messages'], ['audio', 'audio files'], ['video', 'videos'], ['video_note', 'video messages'],
   ['animation', 'GIFs'], ['sticker', 'stickers'], ['contact', 'contacts'], ['location', 'locations'], ['poll', 'polls'],
 ];
-
-const safeName = (name: string): string =>
-  path.basename(name).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(-80) || 'file';
-
-const humanSize = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 interface TGUpdate {
   update_id: number;
@@ -232,7 +222,7 @@ export class TelegramChannel implements SvaraChannel {
         : { kind: 'ignore' };
     }
 
-    if ((file.file_size ?? 0) > MAX_DOWNLOAD_BYTES) {
+    if ((file.file_size ?? 0) > MAX_ATTACHMENT_BYTES) {
       return { kind: 'reply', text: `That file is too large for me (${humanSize(file.file_size!)}). Telegram lets bots receive files up to 20 MB.` };
     }
 
@@ -242,27 +232,16 @@ export class TelegramChannel implements SvaraChannel {
       const res = await fetch(`${this.baseUrl.replace('/bot', '/file/bot')}/${info.file_path}`);
       if (!res.ok) throw new Error(`download failed (${res.status})`);
       const buffer = Buffer.from(await res.arrayBuffer());
-      if (buffer.length > MAX_DOWNLOAD_BYTES) throw new Error('file larger than 20 MB');
+      if (buffer.length > MAX_ATTACHMENT_BYTES) throw new Error('file larger than 20 MB');
 
       const dir = path.join(this.config.downloadDir ?? path.join(process.cwd(), 'uploads', 'telegram'), String(msg.chat.id));
-      await fs.mkdir(dir, { recursive: true });
       const fallback = file.kind === 'photo' ? `photo${path.extname(info.file_path) || '.jpg'}` : 'file';
-      const saved = path.join(dir, `${Date.now()}-${safeName(file.file_name ?? fallback)}`);
-      await fs.writeFile(saved, buffer);
-
       const mime = file.mime_type ?? (file.kind === 'photo' ? 'image/jpeg' : 'application/octet-stream');
-      const caption = (msg.caption ?? '').trim();
-      const what = file.kind === 'photo' ? 'a photo' : `a file named "${file.file_name ?? 'file'}"`;
-      const text = [
-        caption || (mime.startsWith('image/') ? 'The user sent an image without any message.' : 'The user sent a file without any message.'),
-        '',
-        `[The user attached ${what} (${mime}, ${humanSize(buffer.length)}). It is saved on the server at: ${saved}. ` +
-          'If you cannot see attachments directly, use your tools (filesystem, terminal, skills) to open and read it.]',
-      ].join('\n');
+      const saved = await saveAttachment({ dir, name: file.file_name ?? fallback, mimeType: mime, buffer });
 
-      const images: LLMImage[] | undefined = INLINE_IMAGE_TYPES.has(mime) && buffer.length <= MAX_INLINE_IMAGE_BYTES
-        ? [{ mimeType: mime, base64: buffer.toString('base64') }]
-        : undefined;
+      const text = messageWithAttachments((msg.caption ?? '').trim(), [saved]);
+      const inline = toInlineImage(saved, buffer);
+      const images: LLMImage[] | undefined = inline ? [inline] : undefined;
       return { kind: 'ok', text, images };
     } catch (err) {
       console.error('[@yesvara/svara] Telegram attachment failed:', (err as Error).message);

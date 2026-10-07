@@ -35,6 +35,9 @@ import { loadRuntimeConfig, readRawConfig, saveRuntimeConfig } from '../runtime/
 import type { AgentLlmOptions } from './agents.js';
 import { type SiblingSupervisor, pingHealth, readLogTail } from './supervisor.js';
 import { readCalls } from './orchestration.js';
+import { MAX_ATTACHMENT_BYTES, messageWithAttachments, safeName, saveAttachment, toInlineImage, type SavedAttachment } from '../channels/attachments.js';
+import { modelSupportsVision } from '../core/llm.js';
+import type { LLMImage } from '../core/types.js';
 import {
   type DashboardUser, SESSION_COOKIE, LoginLimiter, authenticate, clearSessionCookie, clientIp,
   SetupCodes, createSessionToken, hashPassword, isSameOrigin, isValidEmail, loadSessionKey, normalizeEmail, parseCookies,
@@ -586,17 +589,64 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   // the rest of /api/*, unlike the top-level POST /chat the runtime mounts
   // for external API consumers) ─────────────────────────────────────────
 
-  api.post('/chat', express.json(), asyncRoute(async (req, res) => {
-    const { message, sessionId } = req.body ?? {};
-    if (!message || typeof message !== 'string' || !message.trim()) {
-      res.status(400).json({ error: 'message is required.' });
-      return;
+  // ── Chat input: text, plus optional files/images (multipart) ──────────────────────────────
+  // JSON ({ message, sessionId }) still works; the Chat page sends multipart when something is attached. Files are
+  // saved under uploads/web/<session>/ and described to the agent (it can open them with its tools); images are also
+  // shown to the model directly when it can read them.
+  const MAX_CHAT_FILES = 5;
+  const MAX_CHAT_TOTAL_BYTES = 24 * 1024 * 1024; // stays under a typical reverse-proxy body limit (nginx: 25m)
+  const chatUploader = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_ATTACHMENT_BYTES, files: MAX_CHAT_FILES } }).array('files', MAX_CHAT_FILES);
+  const chatUpload = (req: Request, res: Response, next: NextFunction): void => {
+    chatUploader(req, res, (err?: unknown) => {
+      if (!err) { next(); return; }
+      const code = (err as { code?: string }).code;
+      const error = code === 'LIMIT_FILE_SIZE' ? 'A file is larger than 20 MB.'
+        : code === 'LIMIT_FILE_COUNT' || code === 'LIMIT_UNEXPECTED_FILE' ? `You can attach up to ${MAX_CHAT_FILES} files.`
+        : (err as Error).message;
+      res.status(400).json({ error });
+    });
+  };
+
+  async function collectChatInput(req: Request, sessionId: string): Promise<{ message: string; images?: LLMImage[]; error?: string }> {
+    const files = ((req as Request & { files?: Express.Multer.File[] }).files ?? []);
+    const text = typeof req.body?.message === 'string' ? req.body.message : '';
+    if (!text.trim() && !files.length) return { message: '', error: 'message is required.' };
+    if (!files.length) return { message: text };
+    const total = files.reduce((n, f) => n + f.size, 0);
+    if (total > MAX_CHAT_TOTAL_BYTES) return { message: '', error: `The attachments add up to more than ${Math.round(MAX_CHAT_TOTAL_BYTES / 1024 / 1024)} MB. Send fewer or smaller files.` };
+
+    const dir = path.join(configDir ?? process.cwd(), 'uploads', 'web', safeName(sessionId));
+    const saved: SavedAttachment[] = [];
+    const images: LLMImage[] = [];
+    for (const f of files) {
+      // multer decodes the filename as latin1; browsers send UTF-8.
+      const name = Buffer.from(f.originalname, 'latin1').toString('utf8');
+      const att = await saveAttachment({ dir, name, mimeType: f.mimetype || 'application/octet-stream', buffer: f.buffer });
+      saved.push(att);
+      const inline = toInlineImage(att, f.buffer);
+      if (inline) images.push(inline);
     }
+    return { message: messageWithAttachments(text, saved), images: images.length ? images : undefined };
+  }
+
+  api.get('/chat/capabilities', asyncRoute(async (_req, res) => {
+    const raw = opts.configPath ? await readRawConfig(opts.configPath).catch(() => ({})) : {};
+    const llm = isPlainObject((raw as Record<string, unknown>).llm) ? ((raw as Record<string, unknown>).llm as Record<string, unknown>) : {};
+    res.json({
+      vision: modelSupportsVision(opts.agent.model, typeof llm.vision === 'boolean' ? llm.vision : undefined),
+      maxFiles: MAX_CHAT_FILES,
+      maxFileMB: Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024),
+      maxTotalMB: Math.round(MAX_CHAT_TOTAL_BYTES / 1024 / 1024),
+    });
+  }));
+
+  api.post('/chat', chatUpload, express.json(), asyncRoute(async (req, res) => {
+    const reqSessionId = req.body?.sessionId;
+    const sessionId = typeof reqSessionId === 'string' && reqSessionId ? reqSessionId : crypto.randomUUID();
     try {
-      const result = await opts.agent.process(message, {
-        sessionId: typeof sessionId === 'string' && sessionId ? sessionId : undefined,
-        userId: 'dashboard',
-      });
+      const input = await collectChatInput(req, sessionId);
+      if (input.error) { res.status(400).json({ error: input.error }); return; }
+      const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
       res.json({
         response: result.response,
         sessionId: result.sessionId,
@@ -618,17 +668,22 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
   // than appearing all at once after a 20-30s wait. NDJSON (one JSON object
   // per line) rather than text/event-stream, since EventSource can't send
   // a POST body - a plain chunked response is simpler for a fetch() reader.
-  api.post('/chat/stream', express.json(), asyncRoute(async (req, res) => {
-    const { message, sessionId: reqSessionId } = req.body ?? {};
-    if (!message || typeof message !== 'string' || !message.trim()) {
-      res.status(400).json({ error: 'message is required.' });
-      return;
-    }
+  api.post('/chat/stream', chatUpload, express.json(), asyncRoute(async (req, res) => {
+    const reqSessionId = req.body?.sessionId;
 
     // Resolved here (not left to agent.process()'s own default) so it's
     // known upfront to filter this request's own tool:call events out of
     // every other concurrent session sharing this same agent instance.
     const sessionId = typeof reqSessionId === 'string' && reqSessionId ? reqSessionId : crypto.randomUUID();
+
+    let input: { message: string; images?: LLMImage[]; error?: string };
+    try {
+      input = await collectChatInput(req, sessionId);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+      return;
+    }
+    if (input.error) { res.status(400).json({ error: input.error }); return; }
 
     res.setHeader('Content-Type', 'application/x-ndjson');
     res.setHeader('Cache-Control', 'no-cache');
@@ -642,7 +697,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     opts.agent.on('tool:call', onToolCall);
 
     try {
-      const result = await opts.agent.process(message, { sessionId, userId: 'dashboard' });
+      const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
       res.write(`${JSON.stringify({
         type: 'done',
         response: result.response,

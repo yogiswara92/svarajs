@@ -40,6 +40,63 @@
   let scrollEl;
   let loadingHistory = false;
 
+  // Attachments queued for the next message (images/files). Previews of images use object URLs.
+  let attached = [];
+  let capabilities = { vision: false, maxFiles: 5, maxFileMB: 20, maxTotalMB: 24 };
+  let fileInput;
+  let dragDepth = 0;
+  $: dragging = dragDepth > 0;
+
+  async function loadCapabilities() {
+    try { capabilities = await api.get('/api/chat/capabilities'); } catch { /* defaults are fine */ }
+  }
+
+  function addFiles(list) {
+    const incoming = Array.from(list || []);
+    if (!incoming.length) return;
+    sendError = '';
+    for (const file of incoming) {
+      if (attached.length >= capabilities.maxFiles) { sendError = `You can attach up to ${capabilities.maxFiles} files.`; break; }
+      if (file.size > capabilities.maxFileMB * 1024 * 1024) { sendError = `"${file.name}" is larger than ${capabilities.maxFileMB} MB.`; continue; }
+      if (attached.reduce((n, a) => n + a.file.size, 0) + file.size > capabilities.maxTotalMB * 1024 * 1024) { sendError = `Attachments can add up to ${capabilities.maxTotalMB} MB per message.`; break; }
+      attached = [...attached, {
+        id: crypto.randomUUID(),
+        file,
+        url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+      }];
+    }
+  }
+
+  function removeAttached(id) {
+    const item = attached.find((a) => a.id === id);
+    if (item?.url) URL.revokeObjectURL(item.url);
+    attached = attached.filter((a) => a.id !== id);
+  }
+
+  function onPaste(e) {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  }
+
+  function onDrop(e) {
+    dragDepth = 0;
+    addFiles(e.dataTransfer?.files);
+  }
+
+  // The agent receives a text note listing the saved files; history shows them as chips instead of raw text.
+  function splitAttachmentNote(content) {
+    const marker = '\n\n[Attachments from the user, saved on the server.';
+    const i = (content || '').indexOf(marker);
+    if (i < 0) return { text: content, files: [] };
+    const files = content.slice(i).split('\n').slice(3).flatMap((line) => {
+      const m = /^- (.+) \(([^,()]+), ([^)]+)\): (.+)$/.exec(line);
+      return m ? [{ name: m[1], mimeType: m[2], sizeLabel: m[3] }] : [];
+    });
+    return { text: content.slice(0, i), files };
+  }
+
+  $: needsVisionNote = attached.some((a) => a.file.type.startsWith('image/')) && !capabilities.vision;
+
   let sessions = [];
   let sessionsLoading = true;
   let sessionsError = '';
@@ -119,7 +176,7 @@
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({
           role: m.role,
-          content: m.content,
+          ...(m.role === 'user' ? (() => { const { text, files } = splitAttachmentNote(m.content); return { content: text, files }; })() : { content: m.content }),
           toolsUsed: m.metadata?.toolsUsed || [],
           iterations: m.metadata?.iterations,
           retrievedDocuments: m.metadata?.retrievedDocuments || [],
@@ -133,6 +190,7 @@
   }
 
   onMount(async () => {
+    loadCapabilities();
     await loadSessions();
     if (sessions.some((s) => s.sessionId === sessionId)) {
       await loadHistory(sessionId);
@@ -151,10 +209,16 @@
 
   async function send() {
     const text = input.trim();
-    if (!text || sending) return;
+    if ((!text && attached.length === 0) || sending) return;
+    const toSend = attached;
     input = '';
+    attached = [];
     sendError = '';
-    messages = [...messages, { role: 'user', content: text }];
+    messages = [...messages, {
+      role: 'user',
+      content: text,
+      files: toSend.map((a) => ({ name: a.file.name, mimeType: a.file.type, sizeLabel: formatFileSize(a.file.size), url: a.url })),
+    }];
     sending = true;
 
     // A live placeholder, filled in as tool_call events arrive - this is
@@ -164,7 +228,16 @@
     messages = [...messages, liveMsg];
 
     try {
-      const res = await api.postStream('/api/chat/stream', { message: text, sessionId });
+      let res;
+      if (toSend.length) {
+        const form = new FormData();
+        form.append('message', text);
+        form.append('sessionId', sessionId);
+        for (const a of toSend) form.append('files', a.file, a.file.name);
+        res = await api.postStreamForm('/api/chat/stream', form);
+      } else {
+        res = await api.postStream('/api/chat/stream', { message: text, sessionId });
+      }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -207,7 +280,9 @@
       await loadSessions();
     } catch (e) {
       sendError = e instanceof ApiError ? e.message : (e?.message || 'Failed to send message.');
-      messages = messages.slice(0, -1);
+      messages = messages.slice(0, -2); // the live reply placeholder and the user message that never got an answer
+      input = text; // give the text back so nothing typed is lost
+      attached = toSend;
     } finally {
       sending = false;
     }
@@ -288,7 +363,16 @@
     </div>
   </aside>
 
-  <div class="chat-main">
+  <div
+    class="chat-main"
+    on:dragenter|preventDefault={() => (dragDepth += 1)}
+    on:dragover|preventDefault
+    on:dragleave={() => (dragDepth = Math.max(0, dragDepth - 1))}
+    on:drop|preventDefault={onDrop}
+  >
+    {#if dragging}
+      <div class="drop-overlay"><Icon name="paperclip" /> Drop files to attach</div>
+    {/if}
     <header class="chat-header">
       <button
         type="button"
@@ -334,7 +418,18 @@
                 <span class="dot"></span><span class="dot"></span><span class="dot"></span>
               </div>
             {:else}
-              <div class="chat-bubble-text">{@html renderMarkdown(msg.content)}</div>
+              {#if msg.role === 'user' && msg.files && msg.files.length > 0}
+                <div class="user-files">
+                  {#each msg.files as f}
+                    {#if f.url}
+                      <img class="user-file-thumb" src={f.url} alt={f.name} />
+                    {:else}
+                      <span class="user-file-chip"><Icon name="file" /> <span class="user-file-name">{f.name}</span> <span class="user-file-size">{f.sizeLabel}</span></span>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+              {#if msg.content}<div class="chat-bubble-text">{@html renderMarkdown(msg.content)}</div>{/if}
             {/if}
             {#if msg.role === 'assistant' && msg.attachments && msg.attachments.length > 0}
               <div class="attachments-list">
@@ -371,20 +466,91 @@
 
     {#if sendError}<p class="error-text chat-error">{sendError}</p>{/if}
 
+    {#if attached.length > 0}
+      <div class="attach-strip">
+        {#each attached as a (a.id)}
+          <div class="attach-item">
+            {#if a.url}<img src={a.url} alt={a.file.name} />{:else}<Icon name="file" />{/if}
+            <span class="attach-meta"><span class="attach-name">{a.file.name}</span><span class="attach-size">{formatFileSize(a.file.size)}</span></span>
+            <button type="button" class="attach-remove" aria-label="Remove {a.file.name}" on:click={() => removeAttached(a.id)}><Icon name="x" /></button>
+          </div>
+        {/each}
+      </div>
+      {#if needsVisionNote}
+        <p class="vision-note">This model cannot see images directly. The file is still saved and the agent is told where it is, so it can try to read it with its tools.</p>
+      {/if}
+    {/if}
+
     <form class="chat-input-bar" on:submit|preventDefault={send}>
+      <input type="file" multiple bind:this={fileInput} on:change={(e) => { addFiles(e.currentTarget.files); e.currentTarget.value = ''; }} hidden />
+      <button type="button" class="attach-btn" title="Attach images or files" aria-label="Attach images or files" disabled={sending} on:click={() => fileInput.click()}>
+        <Icon name="paperclip" />
+      </button>
       <textarea
         bind:value={input}
         on:keydown={onKeydown}
-        placeholder="Write a message..."
+        on:paste={onPaste}
+        placeholder="Write a message, or attach / paste / drop an image..."
         rows="1"
         disabled={sending}
       ></textarea>
-      <button class="btn primary" type="submit" disabled={sending || !input.trim()}>Send</button>
+      <button class="btn primary" type="submit" disabled={sending || (!input.trim() && attached.length === 0)}>Send</button>
     </form>
   </div>
 </div>
 
 <style>
+  .chat-main { position: relative; }
+  .drop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-weight: 600;
+    color: var(--primary-dark);
+    background: color-mix(in srgb, var(--primary) 10%, var(--surface));
+    border: 2px dashed var(--primary);
+    border-radius: 0.75rem;
+    pointer-events: none;
+  }
+  .user-files { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem; }
+  .user-file-thumb { max-width: 220px; max-height: 160px; min-width: 2.5rem; min-height: 2.5rem; object-fit: cover; border-radius: 0.5rem; display: block; }
+  .user-file-chip {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.25rem 0.55rem; border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.22); font-size: 0.8rem;
+  }
+  .user-file-name { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-file-size { opacity: 0.75; }
+  .attach-strip { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.6rem 1.25rem 0; }
+  .attach-item {
+    position: relative; display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.35rem 1.7rem 0.35rem 0.4rem; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 0.6rem; max-width: 16rem;
+  }
+  .attach-item img { width: 2.4rem; height: 2.4rem; object-fit: cover; border-radius: 0.4rem; }
+  .attach-meta { display: flex; flex-direction: column; min-width: 0; }
+  .attach-name { font-size: 0.8rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-size { font-size: 0.7rem; color: var(--text-muted); }
+  .attach-remove {
+    position: absolute; top: 0.2rem; right: 0.2rem; width: 1.3rem; height: 1.3rem;
+    display: flex; align-items: center; justify-content: center;
+    border: none; border-radius: 50%; background: var(--surface-alt); color: var(--text-secondary); cursor: pointer; font-size: 0.8rem;
+  }
+  .attach-remove:hover { background: var(--border); }
+  .vision-note { margin: 0.4rem 1.25rem 0; font-size: 0.78rem; color: var(--text-muted); }
+  .attach-btn {
+    flex-shrink: 0; align-self: flex-end; width: 2.4rem; height: 2.4rem;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 0.6rem; background: var(--surface);
+    color: var(--text-secondary); font-size: 1.1rem; cursor: pointer;
+  }
+  .attach-btn:hover:not(:disabled) { background: var(--surface-alt); color: var(--primary-dark); }
+  .attach-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .chat-page {
     display: flex;
     height: 100%;

@@ -190,4 +190,6 @@ export const api = {
   /** Same auth handling as the rest of `api`, but returns the raw Response for the caller to read as a stream (NDJSON chat responses). */
   postStream: (path: string, body?: unknown) =>
     authFetch(path, { method: 'POST', body: body !== undefined ? JSON.stringify(body) : undefined }),
+  /** Same as postStream but sends multipart (files + fields); the browser sets the boundary header itself. */
+  postStreamForm: (path: string, form: FormData) => authFetch(path, { method: 'POST', body: form }),
 };
