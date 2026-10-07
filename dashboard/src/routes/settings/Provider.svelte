@@ -23,7 +23,7 @@
   let saved = false;
 
   let form = {
-    model: '', llmProvider: '', llmBaseURL: '', llmApiKey: '', llmApiKeyEnv: '',
+    model: '', llmVision: 'auto', llmProvider: '', llmBaseURL: '', llmApiKey: '', llmApiKeyEnv: '',
     embeddingsProvider: 'openai', embeddingsApiKey: '', embeddingsModel: '', embeddingsBaseURL: '',
   };
 
@@ -36,6 +36,7 @@
   function populateForm(config) {
     form = {
       model: config.model || '',
+      llmVision: config.llm?.vision === true ? 'yes' : config.llm?.vision === false ? 'no' : 'auto',
       llmProvider: config.llm?.provider || '',
       llmBaseURL: config.llm?.baseURL || '',
       llmApiKey: config.llm?.apiKey || '',
@@ -69,11 +70,12 @@
     try {
       const payload = {
         model: form.model,
-        llm: (form.llmProvider || form.llmBaseURL || form.llmApiKey || form.llmApiKeyEnv) ? {
+        llm: (form.llmProvider || form.llmBaseURL || form.llmApiKey || form.llmApiKeyEnv || form.llmVision !== 'auto') ? {
           provider: form.llmProvider || undefined,
           baseURL: form.llmBaseURL || undefined,
           apiKey: form.llmApiKey || undefined,
           apiKeyEnv: form.llmApiKeyEnv || undefined,
+          vision: form.llmVision === 'yes' ? true : form.llmVision === 'no' ? false : undefined,
         } : undefined,
         embeddings: {
           provider: form.embeddingsProvider,
@@ -154,6 +156,20 @@
           here.
         </span>
       {/if}
+    </label>
+
+    <label>
+      Can this model read images?
+      <select bind:value={form.llmVision}>
+        <option value="auto">Automatic (guess from the model name)</option>
+        <option value="yes">Yes - send photos to the model</option>
+        <option value="no">No - text only</option>
+      </select>
+      <span class="hint">
+        Photos sent over Telegram are always saved on the server and the agent is told where. They are also shown to the
+        model directly only if it can see images. Models such as GPT-4o, Claude and Gemini can; many others cannot
+        and would reject the request, so leave this on Automatic unless your model is not detected.
+      </span>
     </label>
 
     <h2 class="section-heading">Embeddings (RAG / Knowledge)</h2>

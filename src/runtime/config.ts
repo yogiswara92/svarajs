@@ -49,6 +49,8 @@ const RuntimeConfigSchema = z.object({
     baseURL: z.string().optional(),
     apiKey: z.string().optional(),
     apiKeyEnv: z.string().optional(),
+    /** Can the model read images? Unset = guess from the model name (gpt-4o, claude, gemini...). Set true/false to override. */
+    vision: z.boolean().optional(),
   }).optional(),
 
   /**

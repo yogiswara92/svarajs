@@ -38,7 +38,7 @@
 import crypto from 'crypto';
 import EventEmitter from 'events';
 import type { RequestHandler, Express } from 'express';
-import { createAdapter, resolveConfig, type LLMAdapter } from './llm.js';
+import { createAdapter, modelSupportsVision, resolveConfig, type LLMAdapter } from './llm.js';
 import type {
   LLMConfig,
   LLMMessage,
@@ -61,7 +61,7 @@ import { ToolRegistry } from '../tools/registry.js';
 import { SkillRegistry } from '../skills/registry.js';
 import { createSkillTools } from '../skills/tools.js';
 import { createSkillHubTool } from '../skills/hub.js';
-import { LearningMemory } from '../memory/learningFiles.js';
+import { LearningMemory, selectRelevantNotes } from '../memory/learningFiles.js';
 import { createMemoryTool } from '../memory/learningTools.js';
 import { createSessionSearchTool } from '../memory/sessionSearchTool.js';
 import { BackgroundReview } from '../memory/backgroundReview.js';
@@ -183,6 +183,8 @@ export interface AgentConfig {
    * @example 'gpt-4o-mini'
    */
   auxiliaryModel?: string;
+  /** SQLite file for sessions, memory and tracking. @default `./data/<name>.db` (use ':memory:' for a throwaway agent, e.g. in tests) */
+  dbPath?: string;
 
   /**
    * Directory of skills (`<id>/SKILL.md`) this agent can discover, read, and
@@ -283,7 +285,7 @@ export class SvaraAgent extends EventEmitter {
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
     this.verbose = config.verbose ?? false;
-    this.db = new SvaraDB(`./data/${config.name}.db`);
+    this.db = new SvaraDB(config.dbPath ?? `./data/${config.name}.db`);
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
@@ -746,6 +748,7 @@ export class SvaraAgent extends EventEmitter {
     return this.run(msg.text, {
       sessionId: msg.sessionId,
       userId: msg.userId,
+      images: msg.images,
     });
   }
 
@@ -800,8 +803,15 @@ export class SvaraAgent extends EventEmitter {
     })}`;
     if (this.learningMemory) {
       const { agent: agentNotes, user: userNotes } = await this.learningMemory.load();
-      if (agentNotes) systemPrompt += `\n\n--- Your notes (MEMORY.md) ---\n${agentNotes}`;
-      if (userNotes) systemPrompt += `\n\n--- What you know about this user (USER.md) ---\n${userNotes}`;
+      // Once either file grows past a few thousand chars, dumping it whole
+      // into every system prompt lets old, unrelated notes drown out the
+      // current turn - only the entries most relevant to this message (or,
+      // failing a match, the most recent ones) get injected instead. See
+      // selectRelevantNotes() in memory/learningFiles.ts.
+      const relevantAgentNotes = selectRelevantNotes(agentNotes, message);
+      const relevantUserNotes = selectRelevantNotes(userNotes, message);
+      if (relevantAgentNotes) systemPrompt += `\n\n--- Your notes (MEMORY.md) ---\n${relevantAgentNotes}`;
+      if (relevantUserNotes) systemPrompt += `\n\n--- What you know about this user (USER.md) ---\n${relevantUserNotes}`;
     }
     if (this.skillRegistry) {
       const skills = await this.skillRegistry.list();
@@ -818,6 +828,14 @@ export class SvaraAgent extends EventEmitter {
       ragContext
     );
     messages = await this.compressor.maybeCompress(messages);
+
+    // Attach images to the current user turn only when the model can read them (a text-only model would reject the
+    // request). They are sent for this turn but never saved to history - the user's text already says where the file is.
+    if (options.images?.length && modelSupportsVision(this.llmConfig.model, this.llmConfig.vision)) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') { messages[i] = { ...messages[i], images: options.images }; break; }
+      }
+    }
 
     const internalCtx: InternalAgentContext = {
       sessionId,

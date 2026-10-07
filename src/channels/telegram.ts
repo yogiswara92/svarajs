@@ -6,8 +6,9 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import type { SvaraAgent, SvaraChannel } from '../core/agent.js';
-import type { IncomingMessage, ChannelName, Attachment } from '../core/types.js';
+import type { IncomingMessage, ChannelName, Attachment, LLMImage } from '../core/types.js';
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import { attachProgressReporter } from './progressReporter.js';
 import { toTelegramMarkdown, stripMarkdown } from './telegramFormat.js';
@@ -19,11 +20,44 @@ export interface TelegramChannelConfig {
   pollingInterval?: number;
   /** Restrict the bot to these Telegram user IDs (from `msg.from.id`, e.g. via @userinfobot). Unset means anyone can use it. */
   allowedUserIds?: string[];
+  /** Where photos/documents the user sends are saved (default `./uploads/telegram`). Each chat gets its own subfolder. */
+  downloadDir?: string;
 }
+
+/** Telegram bots can only download files up to 20 MB (getFile limit). */
+const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+/** Images are also shown to vision models inline; keep that part small (the file itself is still saved). */
+const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+const INLINE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+interface TGFileInfo { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
+interface TGMessage {
+  message_id: number;
+  from: { id: number; username?: string };
+  chat: { id: number };
+  date: number;
+  text?: string;
+  caption?: string;
+  photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
+  document?: TGFileInfo;
+  // Media this channel cannot read yet - each gets a polite reply instead of silence.
+  voice?: unknown; audio?: unknown; video?: unknown; video_note?: unknown; sticker?: unknown; animation?: unknown;
+  contact?: unknown; location?: unknown; poll?: unknown;
+}
+
+const UNSUPPORTED_MEDIA: Array<[keyof TGMessage, string]> = [
+  ['voice', 'voice messages'], ['audio', 'audio files'], ['video', 'videos'], ['video_note', 'video messages'],
+  ['animation', 'GIFs'], ['sticker', 'stickers'], ['contact', 'contacts'], ['location', 'locations'], ['poll', 'polls'],
+];
+
+const safeName = (name: string): string =>
+  path.basename(name).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^\.+/, '').slice(-80) || 'file';
+
+const humanSize = (n: number): string => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 
 interface TGUpdate {
   update_id: number;
-  message?: { message_id: number; from: { id: number; username?: string }; chat: { id: number }; date: number; text?: string };
+  message?: TGMessage;
 }
 
 /** Registered via setMyCommands so they show up in Telegram's "/" menu button - see mount(). */
@@ -87,7 +121,7 @@ export class TelegramChannel implements SvaraChannel {
         });
         for (const update of updates) {
           this.lastUpdateId = update.update_id;
-          if (update.message?.text) await this.handleUpdate(update);
+          if (update.message?.from) await this.handleUpdate(update);
         }
       } catch { /* polling errors are transient */ }
     }, interval);
@@ -102,14 +136,27 @@ export class TelegramChannel implements SvaraChannel {
 
     if (msg.text?.startsWith('/') && await this.handleCommand(msg, msg.text)) return;
 
+    // Photos and documents arrive without `text` (the user's words, if any, are in `caption`). Save the file and
+    // tell the agent where it is - and show images to the model directly when it can see them.
+    let text = msg.text ?? '';
+    let images: LLMImage[] | undefined;
+    if (!msg.text) {
+      const media = await this.collectMedia(msg);
+      if (media.kind === 'ignore') return;
+      if (media.kind === 'reply') { await this.sendMessage(msg.chat.id, media.text); return; }
+      text = media.text;
+      images = media.images;
+    }
+
     const message: IncomingMessage = {
       id: String(msg.message_id),
       sessionId: String(msg.chat.id),
       userId: String(msg.from.id),
       channel: 'telegram',
-      text: msg.text ?? '',
+      text,
       timestamp: new Date(msg.date * 1000),
       raw: msg,
+      images,
     };
 
     const requestState = { cancelled: false };
@@ -169,8 +216,62 @@ export class TelegramChannel implements SvaraChannel {
     }
   }
 
+  /** Downloads a photo/document the user sent, saves it, and builds the text (and inline images) the agent receives. */
+  private async collectMedia(msg: TGMessage): Promise<
+    { kind: 'ok'; text: string; images?: LLMImage[] } | { kind: 'reply'; text: string } | { kind: 'ignore' }
+  > {
+    const photo = msg.photo?.length ? msg.photo[msg.photo.length - 1] : undefined;
+    const file: (TGFileInfo & { kind: string }) | undefined = photo
+      ? { file_id: photo.file_id, file_size: photo.file_size, file_name: 'photo.jpg', mime_type: 'image/jpeg', kind: 'photo' }
+      : msg.document ? { ...msg.document, kind: 'document' } : undefined;
+
+    if (!file) {
+      const unsupported = UNSUPPORTED_MEDIA.find(([key]) => msg[key] !== undefined);
+      return unsupported
+        ? { kind: 'reply', text: `I can't read ${unsupported[1]} yet. Please send text, a photo, or a document.` }
+        : { kind: 'ignore' };
+    }
+
+    if ((file.file_size ?? 0) > MAX_DOWNLOAD_BYTES) {
+      return { kind: 'reply', text: `That file is too large for me (${humanSize(file.file_size!)}). Telegram lets bots receive files up to 20 MB.` };
+    }
+
+    try {
+      const info = await this.api<{ file_path?: string }>('getFile', { file_id: file.file_id });
+      if (!info.file_path) throw new Error('Telegram returned no file path');
+      const res = await fetch(`${this.baseUrl.replace('/bot', '/file/bot')}/${info.file_path}`);
+      if (!res.ok) throw new Error(`download failed (${res.status})`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > MAX_DOWNLOAD_BYTES) throw new Error('file larger than 20 MB');
+
+      const dir = path.join(this.config.downloadDir ?? path.join(process.cwd(), 'uploads', 'telegram'), String(msg.chat.id));
+      await fs.mkdir(dir, { recursive: true });
+      const fallback = file.kind === 'photo' ? `photo${path.extname(info.file_path) || '.jpg'}` : 'file';
+      const saved = path.join(dir, `${Date.now()}-${safeName(file.file_name ?? fallback)}`);
+      await fs.writeFile(saved, buffer);
+
+      const mime = file.mime_type ?? (file.kind === 'photo' ? 'image/jpeg' : 'application/octet-stream');
+      const caption = (msg.caption ?? '').trim();
+      const what = file.kind === 'photo' ? 'a photo' : `a file named "${file.file_name ?? 'file'}"`;
+      const text = [
+        caption || (mime.startsWith('image/') ? 'The user sent an image without any message.' : 'The user sent a file without any message.'),
+        '',
+        `[The user attached ${what} (${mime}, ${humanSize(buffer.length)}). It is saved on the server at: ${saved}. ` +
+          'If you cannot see attachments directly, use your tools (filesystem, terminal, skills) to open and read it.]',
+      ].join('\n');
+
+      const images: LLMImage[] | undefined = INLINE_IMAGE_TYPES.has(mime) && buffer.length <= MAX_INLINE_IMAGE_BYTES
+        ? [{ mimeType: mime, base64: buffer.toString('base64') }]
+        : undefined;
+      return { kind: 'ok', text, images };
+    } catch (err) {
+      console.error('[@yesvara/svara] Telegram attachment failed:', (err as Error).message);
+      return { kind: 'reply', text: "Sorry, I couldn't download that attachment. Please try sending it again." };
+    }
+  }
+
   /** Handles a leading-slash message as a bot command. Returns false for anything not recognized, so it falls through and reaches the agent as ordinary chat text (e.g. a literal "/" the user meant as a message, not a command). */
-  private async handleCommand(msg: NonNullable<TGUpdate['message']>, text: string): Promise<boolean> {
+  private async handleCommand(msg: TGMessage, text: string): Promise<boolean> {
     const command = text.trim().split(/\s+/)[0].slice(1).split('@')[0].toLowerCase();
     const sessionId = String(msg.chat.id);
 

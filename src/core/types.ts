@@ -16,11 +16,25 @@ export interface LLMConfig {
   temperature?: number;
   maxTokens?: number;
   timeout?: number;
+  /**
+   * Whether the model can read images. `undefined` = decide from the model name (gpt-4o, claude, gemini...);
+   * `true`/`false` overrides it. Images sent to a text-only model make the API reject the request, so unknown
+   * models default to NOT receiving them (the user's message still tells the agent where the file was saved).
+   */
+  vision?: boolean;
+}
+
+/** An image attached to a user message, sent to vision-capable models as an inline data URL. */
+export interface LLMImage {
+  mimeType: string;
+  base64: string;
 }
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /** Images for this (user) message - only sent when the model supports vision; never stored in history. */
+  images?: LLMImage[];
   toolCallId?: string;
   toolCalls?: LLMToolCall[];
   name?: string;
@@ -86,6 +100,8 @@ export interface InternalAgentContext {
 export interface AgentRunOptions {
   sessionId?: string;
   userId?: string;
+  /** Images attached to this message. Sent to the model only if it supports vision. */
+  images?: LLMImage[];
   metadata?: Record<string, unknown>;
 }
 
@@ -219,4 +235,6 @@ export interface IncomingMessage {
   text: string;
   timestamp: Date;
   raw?: unknown;
+  /** Images the user attached (already downloaded). Used when the model supports vision. */
+  images?: LLMImage[];
 }

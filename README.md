@@ -685,6 +685,13 @@ Notes on the webhook-based channels (WhatsApp, Slack):
 - Both mount their routes onto the `'web'` channel's Express app, so connect `'web'` first (or, in standalone mode, the runtime does this for you automatically).
 - Slack verifies every request's `X-Slack-Signature` (HMAC-SHA256 over the raw body + timestamp) before processing it, and drops requests older than 5 minutes.
 
+**Telegram attachments.** Photos and documents the user sends are downloaded (up to Telegram's 20 MB bot limit) into
+`uploads/telegram/<chat id>/` (`downloadDir` option; in standalone mode next to `svara.config.json`). The caption becomes
+the message and the agent is told the file's path, so its tools (filesystem, terminal, skills for PDF/DOCX/XLSX) can open
+it. If the model can read images, the photo is also sent to it directly (`llm.vision`: unset = guess from the model name,
+`true`/`false` to override; also in Settings > AI Provider). Voice notes, video and stickers get a short "I can't read
+that yet" reply. Files from users outside `allowedUserIds` are ignored without a reply.
+
 Discord uses a persistent Gateway WebSocket instead of a webhook (Discord has no
 webhook option for regular bots), so it does not need the `'web'` channel -
 it reconnects automatically if the connection drops.

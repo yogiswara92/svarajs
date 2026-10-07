@@ -65,6 +65,7 @@ export async function startStandaloneRuntime(
       provider: config.llm.provider,
       baseURL: config.llm.baseURL,
       apiKey: config.llm.apiKey || (config.llm.apiKeyEnv ? process.env[config.llm.apiKeyEnv] : undefined),
+      vision: config.llm.vision,
     } : undefined,
     embeddings: config.embeddings,
     skillsDir: config.skillsDir,
@@ -188,6 +189,7 @@ export async function startStandaloneRuntime(
     agent.connectChannel('telegram', {
       token: config.channels.telegram.token ?? process.env.TELEGRAM_BOT_TOKEN,
       allowedUserIds: config.channels.telegram.allowedUserIds,
+      downloadDir: path.join(path.dirname(path.resolve(configPath)), 'uploads', 'telegram'),
     });
   }
   if (config.channels.whatsapp) {

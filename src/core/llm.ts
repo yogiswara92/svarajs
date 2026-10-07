@@ -219,7 +219,7 @@ class OllamaAdapter implements LLMAdapter {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.config.model,
-        messages: messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: messages.map((m) => ({ role: m.role, content: m.content, ...(m.images?.length ? { images: m.images.map((im) => im.base64) } : {}) })),
         options: { temperature: temperature ?? this.config.temperature ?? 0.7 },
         stream: false,
       }),
@@ -283,7 +283,14 @@ export function createAdapter(config: LLMConfig): LLMAdapter {
 
 // ─── Format Converters ────────────────────────────────────────────────────────
 
-function toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {
+export const VISION_MODEL = /gpt-4o|gpt-4\.1|gpt-4-turbo|gpt-4-vision|gpt-5|\bo[134](-|$)|claude|gemini|llava|pixtral|vision|\bvl\b|-vl-|qwen.*vl|llama-?3\.2.*(11|90)b|gemma-?3|4v\b/i;
+
+/** Can this model read images? An explicit setting wins; otherwise a conservative guess from the model name. */
+export function modelSupportsVision(model: string, override?: boolean): boolean {
+  return override ?? VISION_MODEL.test(model);
+}
+
+export function toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {
   if (msg.role === 'tool') {
     return { role: 'tool', tool_call_id: msg.toolCallId, content: msg.content };
   }
@@ -296,6 +303,15 @@ function toOpenAIMessage(msg: LLMMessage): Record<string, unknown> {
         type: 'function',
         function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
       })),
+    };
+  }
+  if (msg.role === 'user' && msg.images?.length) {
+    return {
+      role: 'user',
+      content: [
+        { type: 'text', text: msg.content },
+        ...msg.images.map((im) => ({ type: 'image_url', image_url: { url: `data:${im.mimeType};base64,${im.base64}` } })),
+      ],
     };
   }
   return { role: msg.role, content: msg.content };
@@ -323,7 +339,7 @@ function toOpenAITool(tool: InternalTool): Record<string, unknown> {
   };
 }
 
-function toAnthropicMessage(msg: LLMMessage): Record<string, unknown> {
+export function toAnthropicMessage(msg: LLMMessage): Record<string, unknown> {
   if (msg.role === 'tool') {
     return {
       role: 'user',
@@ -338,6 +354,15 @@ function toAnthropicMessage(msg: LLMMessage): Record<string, unknown> {
         ...msg.toolCalls.map((tc) => ({
           type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments,
         })),
+      ],
+    };
+  }
+  if (msg.role === 'user' && msg.images?.length) {
+    return {
+      role: 'user',
+      content: [
+        ...msg.images.map((im) => ({ type: 'image', source: { type: 'base64', media_type: im.mimeType, data: im.base64 } })),
+        { type: 'text', text: msg.content },
       ],
     };
   }

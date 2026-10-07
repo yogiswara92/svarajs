@@ -16,6 +16,12 @@
 - Agent-first sidebar (avatar, name, status).
 - `SVARA_HOST` environment variable to bind the server to a specific interface.
 
+- **Photos and documents over Telegram.** The bot used to drop every message without text (photos, files) in silence.
+  It now downloads them (up to Telegram's 20 MB bot limit) into `uploads/telegram/<chat>/`, uses the caption as the
+  message, and tells the agent where the file is so its tools can read it. Images are also shown to the model directly
+  when it can see them (`llm.vision`, automatic for GPT-4o, Claude, Gemini and other known vision models; override in
+  Settings > AI Provider). Voice, video, stickers and other media get a short "I can't read that yet" reply instead of silence.
+- `dbPath` agent option (default `./data/<name>.db`; `':memory:'` for throwaway agents and tests).
 - **Main agent as orchestrator.** `list_agents` and `ask_agent` let the main agent delegate to its sibling agents and
   combine their replies. Per-agent on/off switch, timeouts, rate and concurrency limits, replies treated as data, a
   "Team activity" list on the Agents page, and no calls from siblings or delegated sub-agents (no chaining).
