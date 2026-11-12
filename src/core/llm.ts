@@ -333,7 +333,7 @@ function toOpenAITool(tool: InternalTool): Record<string, unknown> {
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: {
+      parameters: tool.inputSchema ?? {
         type: 'object',
         properties: Object.fromEntries(
           Object.entries(tool.parameters).map(([k, p]) => [
@@ -383,7 +383,7 @@ function toAnthropicTool(tool: InternalTool): Record<string, unknown> {
   return {
     name: tool.name,
     description: tool.description,
-    input_schema: {
+    input_schema: tool.inputSchema ?? {
       type: 'object',
       properties: Object.fromEntries(
         Object.entries(tool.parameters).map(([k, p]) => [

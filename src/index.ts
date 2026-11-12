@@ -122,6 +122,7 @@ export { SvaraDB } from './database/sqlite.js';
 
 export { WebChannel } from './channels/web.js';
 export { TelegramChannel } from './channels/telegram.js';
+export { toTelegramMarkdown, stripMarkdown } from './channels/telegramFormat.js';
 export { WhatsAppChannel } from './channels/whatsapp.js';
 export { SlackChannel } from './channels/slack.js';
 export { DiscordChannel } from './channels/discord.js';

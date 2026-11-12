@@ -50,6 +50,13 @@ export interface Tool {
 
   /** Timeout in milliseconds before the tool is cancelled. @default 30000 */
   timeout?: number;
+
+  /**
+   * Raw JSON Schema for the tool's input, sent to the LLM as-is. Use it when the
+   * flat `parameters` shape can't express the input (nested objects, arrays of
+   * objects - e.g. tools proxied from an MCP server). Takes precedence over `parameters`.
+   */
+  inputSchema?: Record<string, unknown>;
 }
 
 /**

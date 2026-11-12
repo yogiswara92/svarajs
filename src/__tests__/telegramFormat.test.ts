@@ -76,3 +76,11 @@ describe('stripMarkdown', () => {
     expect(stripMarkdown('*bold* _italic_ `code` [text]')).toBe('bold italic code text');
   });
 });
+
+describe('public export', () => {
+  it('is available from the package entry for host apps', async () => {
+    const pkg = await import('../index.js');
+    expect(pkg.toTelegramMarkdown('## Hi\n**there**')).toBe('*Hi*\n*there*');
+    expect(pkg.stripMarkdown('*a*_b_')).toBe('ab');
+  });
+});

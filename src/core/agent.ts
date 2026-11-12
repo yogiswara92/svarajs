@@ -273,7 +273,14 @@ export class SvaraAgent extends EventEmitter {
   private readonly embeddingsConfig: RAGConfig['embeddings'];
   private isStarted = false;
   private isKnowledgeInitialized = false;
-  private db: SvaraDB;
+  private readonly dbPath: string;
+  private dbInstance: SvaraDB | null = null;
+
+  /** Opened on first use, so a stateless agent (memory off, caller-owned history) never loads SQLite. */
+  private get db(): SvaraDB {
+    if (!this.dbInstance) this.dbInstance = new SvaraDB(this.dbPath);
+    return this.dbInstance;
+  }
 
   constructor(config: AgentConfig) {
     super();
@@ -286,7 +293,7 @@ export class SvaraAgent extends EventEmitter {
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
     this.verbose = config.verbose ?? false;
-    this.db = new SvaraDB(config.dbPath ?? `./data/${config.name}.db`);
+    this.dbPath = config.dbPath ?? `./data/${config.name}.db`;
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
@@ -479,6 +486,7 @@ export class SvaraAgent extends EventEmitter {
       run: tool.run,
       category: tool.category,
       timeout: tool.timeout,
+      inputSchema: tool.inputSchema,
     };
     this.tools.register(internal);
     return this;
@@ -769,15 +777,17 @@ export class SvaraAgent extends EventEmitter {
     const startTime = Date.now();
     const sessionId = options.sessionId ?? crypto.randomUUID();
     const userId = options.userId ?? 'unknown';
+    // Caller-owned history: the turn is stateless - no session tracking, hydration or persistence here.
+    const externalHistory = options.history;
 
     // Track user and session
-    await this.trackUserAndSession(userId, sessionId);
+    if (!externalHistory) await this.trackUserAndSession(userId, sessionId);
 
     this.emit('message:received', { message, sessionId, userId });
 
     // Hydrate in-process cache from SQLite on first touch of this session in this process
     // (survives restarts - the in-memory Map alone would not).
-    if (this.persistMemory && !this.memory.hasSession(sessionId)) {
+    if (!externalHistory && this.persistMemory && !this.memory.hasSession(sessionId)) {
       const stored = this.db.getMessages(sessionId, 200);
       if (stored.length > 0) {
         await this.memory.hydrate(sessionId, stored.map((m) => ({
@@ -789,7 +799,9 @@ export class SvaraAgent extends EventEmitter {
     }
 
     // Build LLM message history
-    const history = await this.memory.getHistory(sessionId);
+    const history: LLMMessage[] = externalHistory
+      ? externalHistory.map((m) => ({ role: m.role, content: m.content }))
+      : await this.memory.getHistory(sessionId);
 
     // RAG retrieval
     let ragContext = '';
@@ -892,6 +904,7 @@ export class SvaraAgent extends EventEmitter {
       this.emit('tool:call', {
         sessionId,
         tools: llmResponse.toolCalls.map((tc) => tc.name),
+        calls: llmResponse.toolCalls.map((tc) => ({ id: tc.id, name: tc.name, arguments: tc.arguments })),
       });
 
       // Execute all tool calls concurrently
@@ -910,7 +923,9 @@ export class SvaraAgent extends EventEmitter {
           name: result.name,
         });
 
-        this.emit('tool:result', { sessionId, name: result.name, result: result.result });
+        this.emit('tool:result', {
+          sessionId, toolCallId: result.toolCallId, name: result.name, result: result.result, error: result.error,
+        });
       }
     }
 
@@ -930,12 +945,12 @@ export class SvaraAgent extends EventEmitter {
       attachments.push(attachment);
     }
 
-    // Persist to memory (in-process cache, always) and SQLite (survives restarts)
-    await this.memory.append(sessionId, [
+    // Persist to memory (in-process cache, always) and SQLite (survives restarts) - unless the caller owns history
+    if (!externalHistory) await this.memory.append(sessionId, [
       { role: 'user', content: message },
       { role: 'assistant', content: finalResponse },
     ]);
-    if (this.persistMemory) {
+    if (!externalHistory && this.persistMemory) {
       const dedupedToolsUsed = [...new Set(toolsUsed)];
       const assistantMetadata: Record<string, unknown> = {};
       if (dedupedToolsUsed.length > 0) {

@@ -69,6 +69,8 @@ export interface InternalTool {
   run: (args: Record<string, unknown>, ctx: InternalAgentContext) => Promise<unknown>;
   category?: string;
   timeout?: number;
+  /** Raw JSON Schema sent to the LLM as-is instead of one built from `parameters`. */
+  inputSchema?: Record<string, unknown>;
 }
 
 export interface InternalToolParam {
@@ -103,6 +105,12 @@ export interface AgentRunOptions {
   /** Images attached to this message. Sent to the model only if it supports vision. */
   images?: LLMImage[];
   metadata?: Record<string, unknown>;
+  /**
+   * Conversation history owned by the caller (e.g. a host app that keeps its own
+   * message store). When set, the agent uses exactly this history for the turn and
+   * does not read, track or persist the session itself - the turn is stateless.
+   */
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
 }
 
 export interface RetrievedDocument {
