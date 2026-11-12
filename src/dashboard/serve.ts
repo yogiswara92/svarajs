@@ -169,6 +169,11 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         delete headers.origin;
         headers.host = `127.0.0.1:${state.port}`;
         headers.authorization = `Bearer ${token}`;
+        const replay = parsedBodyReplay(req);
+        if (replay) {
+          headers['content-length'] = String(replay.length);
+          delete headers['transfer-encoding'];
+        }
         const upstream = http.request({ host: '127.0.0.1', port: state.port, method: req.method, path: req.url, headers }, (up) => {
           const out = { ...up.headers } as http.OutgoingHttpHeaders;
           // The child redirects within ITS root (e.g. /dashboard -> /dashboard/): keep the browser under /a/<name>.
@@ -178,7 +183,8 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         });
         upstream.on('error', () => { if (!res.headersSent) res.status(502).type('text/plain').send(`Agent "${name}" did not respond.`); else res.end(); });
         res.on('close', () => upstream.destroy());
-        req.pipe(upstream);
+        if (replay) upstream.end(replay);
+        else req.pipe(upstream);
       })().catch(() => { if (!res.headersSent) res.status(500).end(); });
     });
   }
@@ -1533,6 +1539,15 @@ function mergeFieldsPreservingSetPlaceholder(current: Record<string, unknown>, u
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The app's global JSON parser may already have consumed a request body before the sibling proxy sees it. Returns
+ * the parsed body re-serialized for forwarding, or null when the raw stream is still unread and can be piped as is
+ * (piping a consumed stream would leave the child waiting for the declared Content-Length until it aborts).
+ */
+export function parsedBodyReplay(req: { _body?: boolean; body?: unknown }): Buffer | null {
+  return req._body === true ? Buffer.from(JSON.stringify(req.body ?? {})) : null;
 }
 
 export function mergeConfigUpdates(current: Record<string, unknown>, updates: Record<string, unknown>): Record<string, unknown> {
