@@ -1447,7 +1447,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     if (!opts.mcpManager) { res.status(400).json({ error: 'MCP is not enabled on this runtime.' }); return; }
     try {
       cleanupExpiredSvaramindFlows();
-      const redirectUri = `${req.protocol}://${req.get('host')}/svaramind/oauth/callback`;
+      const redirectUri = `${publicBaseOf(req) ?? `${req.protocol}://${req.get('host')}`}/svaramind/oauth/callback`;
       const clientId = await registerOAuthClient(redirectUri);
       const { verifier, challenge } = generatePkce();
       const state = generateState();
@@ -1539,6 +1539,23 @@ function mergeFieldsPreservingSetPlaceholder(current: Record<string, unknown>, u
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Where browsers reach this runtime from outside, when a hosting proxy in front of it says so (header
+ * X-Svara-Public-Base, an https URL that may include a path prefix). Used for OAuth redirect URIs, which must point
+ * back through that proxy. Only an authenticated dashboard call reads it.
+ */
+export function publicBaseOf(req: { get(name: string): string | undefined }): string | null {
+  const raw = req.get('x-svara-public-base');
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:' || url.search || url.hash) return null;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
 }
 
 /**

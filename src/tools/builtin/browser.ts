@@ -20,6 +20,7 @@
 import { loadPlaywright } from '../lazyDeps.js';
 import type { Tool } from '../../types.js';
 import type { Browser, Page, ElementHandle } from 'playwright';
+import { assertPublicUrl, networkGuardEnabled } from '../../security/netGuard.js';
 
 export interface BrowserToolsOptions {
   /** Launch Chromium headless (default) or headed - useful for local debugging. @default true */
@@ -32,10 +33,27 @@ let browserPromise: Promise<Browser> | null = null;
 let pagePromise: Promise<Page> | null = null;
 let refMap: Map<string, ElementHandle> = new Map();
 
+let lastUsedAt = 0;
+let idleTimer: ReturnType<typeof setInterval> | null = null;
+
+/** SVARA_BROWSER_IDLE_MS: close Chromium after this long unused (it holds a few hundred MB). Unset or 0 = keep it open. */
+function browserIdleMs(): number {
+  const n = Number(process.env.SVARA_BROWSER_IDLE_MS);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 async function getBrowserInstance(headless: boolean): Promise<Browser> {
+  lastUsedAt = Date.now();
   if (!browserPromise) {
     const { chromium } = await loadPlaywright();
     browserPromise = chromium.launch({ headless });
+    const idle = browserIdleMs();
+    if (idle && !idleTimer) {
+      idleTimer = setInterval(() => {
+        if (browserPromise && Date.now() - lastUsedAt > idle) void closeBrowser().catch(() => {});
+      }, Math.min(idle, 60_000));
+      idleTimer.unref?.();
+    }
   }
   return browserPromise;
 }
@@ -43,7 +61,20 @@ async function getBrowserInstance(headless: boolean): Promise<Browser> {
 async function getPage(headless: boolean): Promise<Page> {
   const browser = await getBrowserInstance(headless);
   if (!pagePromise) {
-    pagePromise = browser.newPage();
+    pagePromise = browser.newPage().then(async (page) => {
+      // Shared hosts: every request the page makes (navigation, redirects, subresources) must stay off the private network
+      if (networkGuardEnabled()) {
+        await page.route('**/*', async (route) => {
+          try {
+            await assertPublicUrl(route.request().url());
+            await route.continue();
+          } catch {
+            await route.abort('blockedbyclient');
+          }
+        });
+      }
+      return page;
+    });
   }
   return pagePromise;
 }
@@ -61,6 +92,7 @@ export async function getSharedBrowser(headless = true): Promise<Browser> {
 
 /** Close the shared browser instance, if one was launched. Call on agent/runtime shutdown. */
 export async function closeBrowser(): Promise<void> {
+  if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
   if (browserPromise) {
     const browser = await browserPromise;
     await browser.close();
@@ -82,6 +114,9 @@ export function createBrowserTools(opts: BrowserToolsOptions = {}): Tool[] {
     },
     timeout: timeout + 5_000,
     async run({ url }) {
+      if (networkGuardEnabled()) {
+        try { await assertPublicUrl(String(url)); } catch (err) { return { error: (err as Error).message }; }
+      }
       const page = await getPage(headless);
       // 'domcontentloaded' fires on the raw HTML, before a JS SPA has fetched
       // and rendered its actual content - 'networkidle' waits for in-flight

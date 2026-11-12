@@ -84,7 +84,8 @@ export async function startStandaloneRuntime(
     // Shares filesystem's rootDir - a file written there can be attached to
     // a reply and delivered to the user, in any channel, without which it'd
     // just sit invisibly on the server's disk.
-    agent.addTool(createSendFileTool({ rootDir: (filesystemOpts as { rootDir?: string }).rootDir }));
+    const { rootDir, backend, dockerContainer } = filesystemOpts as { rootDir?: string; backend?: 'local' | 'docker'; dockerContainer?: string };
+    agent.addTool(createSendFileTool({ rootDir, backend, dockerContainer }));
   }
   if (config.tools.web) {
     createWebTools(toolOpts(config.tools.web)).forEach((t) => agent.addTool(t));
@@ -165,7 +166,9 @@ export async function startStandaloneRuntime(
   if (config.apiKey) {
     const expressApp = app.getExpressApp();
     expressApp.post('/chat', (req, res, next) => {
-      const provided = req.headers.authorization?.replace('Bearer ', '');
+      // X-Svara-Chat-Key: the same key, when a hosting proxy in front of this runtime needs Authorization for itself
+      const header = req.headers['x-svara-chat-key'] ?? req.headers.authorization;
+      const provided = (Array.isArray(header) ? header[0] : header)?.replace('Bearer ', '');
       if (provided !== config.apiKey) {
         res.status(401).json({ error: 'Unauthorized' });
         return;

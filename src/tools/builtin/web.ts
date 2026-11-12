@@ -19,6 +19,7 @@
 import { stripHtml } from '../../rag/loader.js';
 import type { Tool } from '../../types.js';
 import type { Page } from 'playwright';
+import { guardedFetch } from '../../security/netGuard.js';
 
 export interface WebToolsOptions {
   /** Force a specific search backend instead of auto-picking by which keys are configured. */
@@ -77,7 +78,7 @@ export function createWebTools(opts: WebToolsOptions = {}): Tool[] {
       const controller = new AbortController();
       const abortTimer = setTimeout(() => controller.abort(), timeout);
       try {
-        const res = await fetch(target, { signal: controller.signal, redirect: 'follow' });
+        const res = await guardedFetch(target, { signal: controller.signal });
         const contentType = res.headers.get('content-type') ?? '';
         const raw = await res.text();
         const content = contentType.includes('html') ? stripHtml(raw) : raw;

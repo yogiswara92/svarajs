@@ -18,6 +18,7 @@ import type { SkillRegistry } from './registry.js';
 import type { SkillFrontmatter } from './types.js';
 import type { ThreatMatch } from '../security/threatPatterns.js';
 import type { Tool } from '../types.js';
+import { guardedFetch } from '../security/netGuard.js';
 
 export interface SkillHubOptions {
   /** Called when installed content needs a yes/no decision. No callback = declined, not allowed. */
@@ -64,7 +65,7 @@ export async function installSkillFromHub(
   const timer = setTimeout(() => controller.abort(), opts.timeout ?? 15_000);
   let raw: string;
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await guardedFetch(url, { signal: controller.signal });
     if (!res.ok) {
       throw new Error(`[SvaraJS] Could not fetch "${url}": ${res.status} ${res.statusText}`);
     }

@@ -22,6 +22,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { validateWithinDir } from '../../security/pathGuard.js';
 import type { Tool } from '../../types.js';
+import { containerPath, dockerExec } from './dockerExec.js';
 
 export interface RegisteredFile {
   absolutePath: string;
@@ -30,6 +31,8 @@ export interface RegisteredFile {
   size: number;
   sessionId: string;
   createdAt: number;
+  /** A copy taken out of a container (docker backend) - deleted when it expires. */
+  staged?: boolean;
 }
 
 const MIME_TYPES: Record<string, string> = {
@@ -60,7 +63,10 @@ const pendingBySession = new Map<string, string[]>();
 function pruneExpired(): void {
   const cutoff = Date.now() - FILE_TTL_MS;
   for (const [token, file] of registry) {
-    if (file.createdAt < cutoff) registry.delete(token);
+    if (file.createdAt < cutoff) {
+      registry.delete(token);
+      if (file.staged) void fs.rm(file.absolutePath, { force: true }).catch(() => {});
+    }
   }
 }
 
@@ -81,10 +87,18 @@ export interface SendFileToolOptions {
   rootDir?: string;
   /** Max attachable file size in bytes - keeps a runaway generated file from breaking delivery (e.g. Telegram's bot API caps documents at 50MB). @default 20_000_000 */
   maxFileSize?: number;
+  /** `'docker'`: the file lives in a container (see the filesystem tools' docker backend) and is copied out to `stagingDir`. */
+  backend?: 'local' | 'docker';
+  dockerContainer?: string;
+  /** Host folder for copies taken out of the container. @default <cwd>/.svara/outbox */
+  stagingDir?: string;
 }
 
 export function createSendFileTool(opts: SendFileToolOptions = {}): Tool {
-  const rootDir = opts.rootDir ?? process.cwd();
+  const docker = opts.backend === 'docker';
+  if (docker && !opts.dockerContainer) throw new Error('[SvaraJS] createSendFileTool: "dockerContainer" is required when backend is "docker".');
+  const rootDir = opts.rootDir ?? (docker ? '/workspace' : process.cwd());
+  const stagingDir = opts.stagingDir ?? path.join(process.cwd(), '.svara', 'outbox');
   const maxFileSize = opts.maxFileSize ?? 20_000_000;
 
   return {
@@ -100,31 +114,50 @@ export function createSendFileTool(opts: SendFileToolOptions = {}): Tool {
     },
     async run({ path: reqPath, filename }, ctx) {
       pruneExpired();
-      const resolved = validateWithinDir(String(reqPath), rootDir);
-      const stat = await fs.stat(resolved).catch(() => null);
-      if (!stat || !stat.isFile()) {
-        return { error: `File not found: ${reqPath}` };
-      }
-      if (stat.size > maxFileSize) {
-        return { error: `File is ${stat.size} bytes, exceeds the ${maxFileSize}-byte attach limit.` };
+      const token = crypto.randomUUID();
+      let resolved: string;
+      let size: number;
+      let staged = false;
+      if (docker) {
+        const inContainer = containerPath(String(reqPath), rootDir);
+        const r = await dockerExec(opts.dockerContainer!, ['sh', '-c',
+          'if [ ! -f "$1" ]; then echo "File not found: $1" >&2; exit 3; fi; '
+          + 's=$(wc -c < "$1" | tr -d "[:space:]"); if [ "$s" -gt "$2" ]; then echo "File is $s bytes, exceeds the $2-byte attach limit." >&2; exit 4; fi; cat -- "$1"',
+          'sh', inContainer, String(maxFileSize)], { maxBytes: maxFileSize + 1 });
+        if (r.exitCode !== 0) return { error: r.stderr || `File not found: ${reqPath}` };
+        await fs.mkdir(stagingDir, { recursive: true, mode: 0o700 });
+        resolved = path.join(stagingDir, `${token}${path.posix.extname(inContainer).toLowerCase()}`);
+        await fs.writeFile(resolved, r.stdout, { mode: 0o600 });
+        size = r.stdout.length;
+        staged = true;
+      } else {
+        resolved = validateWithinDir(String(reqPath), rootDir);
+        const stat = await fs.stat(resolved).catch(() => null);
+        if (!stat || !stat.isFile()) {
+          return { error: `File not found: ${reqPath}` };
+        }
+        if (stat.size > maxFileSize) {
+          return { error: `File is ${stat.size} bytes, exceeds the ${maxFileSize}-byte attach limit.` };
+        }
+        size = stat.size;
       }
 
-      const displayName = filename ? String(filename) : path.basename(resolved);
-      const token = crypto.randomUUID();
+      const displayName = filename ? String(filename) : path.posix.basename(String(reqPath));
       registry.set(token, {
         absolutePath: resolved,
         filename: displayName,
         mimeType: MIME_TYPES[path.extname(resolved).toLowerCase()],
-        size: stat.size,
+        size,
         sessionId: ctx.sessionId,
         createdAt: Date.now(),
+        staged,
       });
 
       const tokens = pendingBySession.get(ctx.sessionId) ?? [];
       tokens.push(token);
       pendingBySession.set(ctx.sessionId, tokens);
 
-      return { attached: displayName, size: stat.size };
+      return { attached: displayName, size };
     },
   };
 }
