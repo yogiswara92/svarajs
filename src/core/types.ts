@@ -42,6 +42,8 @@ export interface LLMMessage {
 
 export interface LLMResponse {
   content: string;
+  /** The model's own reasoning, when the provider returns it (OpenRouter/DeepSeek `reasoning`, Anthropic thinking). */
+  reasoning?: string;
   toolCalls?: LLMToolCall[];
   usage: TokenUsage;
   model: string;
@@ -117,6 +119,19 @@ export interface RetrievedDocument {
   source: string;
   score: number;
   excerpt: string;
+  /** Where to open it, when the source has an address (e.g. a Svaramind document). */
+  link?: string;
+}
+
+/**
+ * Looks something up before the model is called, for every message (e.g. a search of the user's notes app), so the
+ * answer is grounded even when the model would not have thought to search. Returns text for the prompt and the
+ * documents to show as sources; null or an empty result adds nothing. Failures are recorded and skipped.
+ */
+export interface ContextProvider {
+  name: string;
+  /** null = nothing to do for this message (skipped); it then leaves no trace step. */
+  run(message: string, ctx: { sessionId: string; metadata: Record<string, unknown> }): Promise<{ text?: string; documents?: RetrievedDocument[]; note?: string } | null>;
 }
 
 /**
@@ -143,6 +158,8 @@ export interface AgentRunResult {
   duration: number;
   retrievedDocuments?: RetrievedDocument[];
   attachments?: Attachment[];
+  /** Step-by-step record of the turn (see core/trace.ts). */
+  trace?: import('./trace.js').TurnTrace;
 }
 
 // ─── Memory Internals ────────────────────────────────────────────────────────

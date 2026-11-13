@@ -758,7 +758,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       const endTurn = beginTurn(sessionId, input);
       let result;
       try {
-        result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
+        result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images, metadata: { channel: 'web', target: sessionId } });
       } finally {
         endTurn();
       }
@@ -810,10 +810,16 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       res.write(`${JSON.stringify({ type: 'tool_call', tools: evt.tools })}\n`);
     };
     opts.agent.on('tool:call', onToolCall);
+    // Every step as it starts and ends (context lookups, model calls, tool calls), for a live view of the work
+    const onStep = (evt: { sessionId: string; phase: string; step: unknown }) => {
+      if (evt.sessionId !== sessionId) return;
+      res.write(`${JSON.stringify({ type: 'step', phase: evt.phase, step: evt.step })}\n`);
+    };
+    opts.agent.on('trace:step', onStep);
     const endTurn = beginTurn(sessionId, input);
 
     try {
-      const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images });
+      const result = await opts.agent.process(input.message, { sessionId, userId: 'dashboard', images: input.images, metadata: { channel: 'web', target: sessionId } });
       res.write(`${JSON.stringify({
         type: 'done',
         response: result.response,
@@ -824,12 +830,14 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         iterations: result.iterations,
         usage: result.usage,
         duration: result.duration,
+        trace: result.trace,
       })}\n`);
     } catch (err) {
       res.write(`${JSON.stringify({ type: 'error', error: (err as Error).message })}\n`);
     } finally {
       endTurn();
       opts.agent.off('tool:call', onToolCall);
+      opts.agent.off('trace:step', onStep);
       res.end();
     }
   }));
@@ -1262,7 +1270,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         deliverTo: validDeliverTo,
       };
       const record = opts.scheduler.create(String(schedule), String(prompt), id ? String(id) : undefined, extra);
-      if (opts.configPath) {
+      if (opts.configPath && !opts.scheduler.persists) {
         const current = await readRawConfig(opts.configPath);
         const cronList = Array.isArray(current.cron) ? [...current.cron as unknown[]] : [];
         cronList.push({ id: record.id, schedule: record.expression, prompt: record.prompt, name: record.name, skills: record.skills, deliverTo: record.deliverTo });
@@ -1278,7 +1286,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     if (!opts.scheduler) { res.status(400).json({ error: 'Cron is not enabled on this runtime.' }); return; }
     const deleted = opts.scheduler.delete(req.params.id);
     if (!deleted) { res.status(404).json({ error: 'Not found' }); return; }
-    if (opts.configPath) {
+    if (opts.configPath && !opts.scheduler.persists) {
       const current = await readRawConfig(opts.configPath);
       const cronList = Array.isArray(current.cron)
         ? (current.cron as Array<{ id?: string }>).filter((j) => j.id !== req.params.id)
@@ -1286,6 +1294,38 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       await saveRuntimeConfig(opts.configPath, { ...current, cron: cronList });
     }
     res.json({ deleted: req.params.id });
+  }));
+
+  // Change, pause or resume a job. Only on schedulers that persist their own changes (the standalone runtime).
+  api.patch('/cron/:id', express.json(), asyncRoute(async (req, res) => {
+    if (!opts.scheduler?.persists) { res.status(400).json({ error: 'Editing scheduled tasks is not available on this runtime.' }); return; }
+    const b = req.body ?? {};
+    try {
+      const deliverTo = b.deliverTo === null ? null
+        : b.deliverTo && typeof b.deliverTo === 'object' && b.deliverTo.channel && b.deliverTo.target
+          ? { channel: String(b.deliverTo.channel) as ChannelName, target: String(b.deliverTo.target) }
+          : undefined;
+      const record = opts.scheduler.update(req.params.id, {
+        schedule: b.schedule !== undefined ? String(b.schedule) : undefined,
+        prompt: b.prompt !== undefined ? String(b.prompt) : undefined,
+        name: b.name !== undefined ? String(b.name) : undefined,
+        skills: Array.isArray(b.skills) ? b.skills.map(String) : undefined,
+        deliverTo,
+        paused: b.paused !== undefined ? !!b.paused : undefined,
+      });
+      res.json(record);
+    } catch (err) {
+      res.status(/not found/i.test((err as Error).message) ? 404 : 400).json({ error: (err as Error).message });
+    }
+  }));
+
+  // Run a job now as a test; answers once the run finished.
+  api.post('/cron/:id/run', asyncRoute(async (req, res) => {
+    if (!opts.scheduler) { res.status(400).json({ error: 'Cron is not enabled on this runtime.' }); return; }
+    if (!opts.scheduler.get(req.params.id)) { res.status(404).json({ error: 'Not found' }); return; }
+    const response = await opts.scheduler.runNow(req.params.id);
+    const job = opts.scheduler.get(req.params.id);
+    res.json(response === null ? { ok: false, error: job?.lastError || 'The run failed.' } : { ok: true, response });
   }));
 
   // ── Pending approvals (dangerous terminal_exec commands) ──────────────────

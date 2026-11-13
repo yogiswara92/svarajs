@@ -20,6 +20,19 @@ const RuntimeConfigSchema = z.object({
   name: z.string().default('Svara Assistant'),
   model: z.string(),
   systemPrompt: z.string().optional(),
+  /** Instructions from the hosting app (workspace, self-management), appended after systemPrompt and not part of the personality. */
+  hostPrompt: z.string().optional(),
+  /** IANA time zone (e.g. "Asia/Jakarta") for the prompt's date/time and for cron schedules. Defaults to the server's zone. */
+  timezone: z.string().optional(),
+  /**
+   * Search the user's Svaramind workspaces before every answer (when Svaramind is connected), so notes and
+   * knowledge-graph facts are used without the model having to decide to search. On by default.
+   */
+  svaramindContext: z.object({
+    enabled: z.boolean().optional(),
+    /** Workspace ids to search (at most 4); the pinned workspace is always included. */
+    workspaces: z.array(z.string()).max(20).optional(),
+  }).optional(),
   auxiliaryModel: z.string().optional(),
   contextWindow: z.number().optional(),
   /**
@@ -132,9 +145,10 @@ const RuntimeConfigSchema = z.object({
     skills: z.array(z.string()).optional(),
     /** Push the result to a connected channel when the run finishes, in addition to the server log. `target` is channel-specific: Telegram chat id, Discord channel id, Slack channel id/name, WhatsApp phone number. */
     deliverTo: z.object({
-      channel: z.enum(['telegram', 'whatsapp', 'slack', 'discord']),
+      channel: z.enum(['web', 'telegram', 'whatsapp', 'slack', 'discord']),
       target: z.string(),
     }).optional(),
+    paused: z.boolean().optional(),
   })).default([]),
 
   /**

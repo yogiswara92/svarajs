@@ -126,8 +126,11 @@ class OpenAIAdapter implements LLMAdapter {
       arguments: safeParseJSON(tc.function.arguments),
     }));
 
+    const msg = choice.message as { reasoning?: unknown; reasoning_content?: unknown };
+    const reasoning = typeof msg.reasoning === 'string' ? msg.reasoning : typeof msg.reasoning_content === 'string' ? msg.reasoning_content : undefined;
     return {
       content: choice.message.content ?? '',
+      reasoning: reasoning || undefined,
       toolCalls: toolCalls.length ? toolCalls : undefined,
       usage: {
         promptTokens: response.usage.prompt_tokens,
@@ -196,8 +199,10 @@ class AnthropicAdapter implements LLMAdapter {
       arguments: (c as { id: string; name: string; input: Record<string, unknown> }).input,
     }));
 
+    const thinking = response.content.filter((c) => (c as { type: string }).type === 'thinking').map((c) => (c as unknown as { thinking?: string }).thinking || '').join('\n');
     return {
       content: textParts.map((c) => (c as { text: string }).text).join(''),
+      reasoning: thinking || undefined,
       toolCalls: toolCalls.length ? toolCalls : undefined,
       usage: {
         promptTokens: response.usage.input_tokens,

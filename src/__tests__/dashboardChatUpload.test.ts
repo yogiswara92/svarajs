@@ -42,7 +42,7 @@ describe('dashboard chat with attachments', () => {
   it('keeps plain JSON chat working (no attachments)', async () => {
     const res = await fetch(`${base}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'halo', sessionId: 'abc' }) });
     expect(res.status).toBe(200);
-    expect(process_).toHaveBeenCalledWith('halo', { sessionId: 'abc', userId: 'dashboard', images: undefined });
+    expect(process_).toHaveBeenCalledWith('halo', { sessionId: 'abc', userId: 'dashboard', images: undefined, metadata: { channel: 'web', target: 'abc' } });
   });
 
   it('saves an uploaded image, tells the agent where it is, and passes it inline', async () => {

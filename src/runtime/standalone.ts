@@ -31,6 +31,8 @@ import { createOrchestrationTools } from '../dashboard/orchestration.js';
 import path from 'path';
 import { McpManager } from '../mcp/manager.js';
 import { SVARAMIND_SERVER_ID, refreshSvaramindConfig } from '../integrations/svaramind.js';
+import { createSvaramindSaveFileTool } from '../integrations/svaramindFiles.js';
+import { createSvaramindContextProvider } from '../integrations/svaramindContext.js';
 
 export interface StandaloneRuntime {
   agent: SvaraAgent;
@@ -70,6 +72,8 @@ export async function startStandaloneRuntime(
     } : undefined,
     learningMemory: config.learningMemory,
     backgroundReview: config.backgroundReview,
+    hostPrompt: config.hostPrompt,
+    timezone: config.timezone,
   });
 
   if (config.tools.terminal) {
@@ -102,9 +106,23 @@ export async function startStandaloneRuntime(
   // (the dashboard's "New job" form only appears when a scheduler exists).
   const scheduler = new CronScheduler({
     agent,
+    timezone: agent.timezone,
+    // Jobs the agent creates from a chat must survive a restart just like the ones added in the dashboard
+    onChange: async (jobs) => {
+      const current = await readRawConfig(configPath);
+      await saveRuntimeConfig(configPath, {
+        ...current,
+        cron: jobs.map((j) => ({ id: j.id, schedule: j.expression, prompt: j.prompt, name: j.name, skills: j.skills, deliverTo: j.deliverTo, paused: j.paused })),
+      });
+    },
     onResult: async (job, response) => {
       console.log(`[@yesvara/svara] cron:${job.id} -> ${response}`);
       if (!job.deliverTo) return;
+      // The web chat has no push connection: the result is added to that chat's history instead
+      if (job.deliverTo.channel === 'web') {
+        await agent.appendAssistantMessage(job.deliverTo.target, response, { scheduledTask: job.name || job.id });
+        return;
+      }
       const channel = agent.getChannel(job.deliverTo.channel);
       if (!channel) {
         console.warn(`[@yesvara/svara] cron:${job.id} wants delivery via "${job.deliverTo.channel}", but that channel isn't connected.`);
@@ -120,13 +138,24 @@ export async function startStandaloneRuntime(
   });
   agent.addTool(createCronTool(scheduler));
   for (const job of config.cron) {
-    scheduler.create(job.schedule, job.prompt, job.id, { name: job.name, skills: job.skills, deliverTo: job.deliverTo });
+    try {
+      scheduler.load(job.schedule, job.prompt, job.id, { name: job.name, skills: job.skills, deliverTo: job.deliverTo, paused: job.paused });
+    } catch (err) {
+      console.error(`[@yesvara/svara] skipping saved scheduled task ${job.id}: ${(err as Error).message}`);
+    }
   }
 
   // Connect each configured MCP server best-effort - one unreachable server
   // (a stale stdio command, a down remote endpoint) shouldn't block the rest
   // of the agent from starting, same reasoning as knowledge-base init below.
   const mcpManager = new McpManager(agent);
+  if (config.svaramindContext?.enabled !== false) {
+    agent.addContextProvider(createSvaramindContextProvider(mcpManager, { workspaces: config.svaramindContext?.workspaces }));
+  }
+  if (config.tools.filesystem) {
+    const { rootDir, backend, dockerContainer } = toolOpts(config.tools.filesystem) as { rootDir?: string; backend?: 'local' | 'docker'; dockerContainer?: string };
+    agent.addTool(createSvaramindSaveFileTool(mcpManager, { rootDir, backend, dockerContainer }));
+  }
   for (const server of config.mcpServers) {
     try {
       let toConnect = server;

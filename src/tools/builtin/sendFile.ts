@@ -94,6 +94,32 @@ export interface SendFileToolOptions {
   stagingDir?: string;
 }
 
+/**
+ * Reads a file the agent made, from its working directory or its sandbox container (docker backend).
+ * Throws with a readable message when it is missing or larger than `maxBytes`.
+ */
+export async function readAgentFile(
+  opts: Pick<SendFileToolOptions, 'rootDir' | 'backend' | 'dockerContainer'>,
+  reqPath: string,
+  maxBytes: number,
+): Promise<Buffer> {
+  const docker = opts.backend === 'docker';
+  if (docker) {
+    const inContainer = containerPath(reqPath, opts.rootDir ?? '/workspace');
+    const r = await dockerExec(opts.dockerContainer!, ['sh', '-c',
+      'if [ ! -f "$1" ]; then echo "File not found: $1" >&2; exit 3; fi; '
+      + 's=$(wc -c < "$1" | tr -d "[:space:]"); if [ "$s" -gt "$2" ]; then echo "File is $s bytes, over the $2-byte limit." >&2; exit 4; fi; cat -- "$1"',
+      'sh', inContainer, String(maxBytes)], { maxBytes: maxBytes + 1 });
+    if (r.exitCode !== 0) throw new Error(r.stderr || `File not found: ${reqPath}`);
+    return r.stdout;
+  }
+  const resolved = validateWithinDir(reqPath, opts.rootDir ?? process.cwd());
+  const stat = await fs.stat(resolved).catch(() => null);
+  if (!stat || !stat.isFile()) throw new Error(`File not found: ${reqPath}`);
+  if (stat.size > maxBytes) throw new Error(`File is ${stat.size} bytes, over the ${maxBytes}-byte limit.`);
+  return fs.readFile(resolved);
+}
+
 export function createSendFileTool(opts: SendFileToolOptions = {}): Tool {
   const docker = opts.backend === 'docker';
   if (docker && !opts.dockerContainer) throw new Error('[SvaraJS] createSendFileTool: "dockerContainer" is required when backend is "docker".');

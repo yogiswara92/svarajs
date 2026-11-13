@@ -53,6 +53,9 @@ import type {
   KnowledgeDocument,
   Attachment,
   RAGConfig,
+  RetrievedDocument,
+  ContextProvider,
+  LLMResponse,
 } from './types.js';
 import { ConversationMemory } from '../memory/conversation.js';
 import { ContextBuilder } from '../memory/context.js';
@@ -68,6 +71,7 @@ import { BackgroundReview } from '../memory/backgroundReview.js';
 import { SvaraDB } from '../database/sqlite.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { drainPendingTokens, getRegisteredFile } from '../tools/builtin/sendFile.js';
+import { TraceRecorder, clip } from './trace.js';
 import type { Tool } from '../types.js';
 
 // ─── Channel Interface (implemented in channels/) ─────────────────────────────
@@ -238,6 +242,18 @@ export interface AgentConfig {
   backgroundReview?: boolean;
 
   /**
+   * Extra instructions from the app hosting this agent (its workspace, what it may manage itself), appended after
+   * `systemPrompt`. Kept separate so a user editing the personality never sees or removes it.
+   */
+  hostPrompt?: string;
+
+  /**
+   * IANA time zone the agent lives in (e.g. "Asia/Jakarta"): the date/time in its prompt and its cron schedules use it.
+   * Defaults to the server's own zone.
+   */
+  timezone?: string;
+
+  /**
    * Print detailed logs of every LLM call, tool execution, and memory operation.
    * Useful during development. Default: false
    */
@@ -253,6 +269,9 @@ export class SvaraAgent extends EventEmitter {
   private llmConfig: LLMConfig;
   private readonly llm: SwitchableAdapter;
   private readonly systemPrompt: string;
+  private readonly hostPrompt: string;
+  private readonly contextProviders: ContextProvider[] = [];
+  readonly timezone: string | undefined;
   private readonly tools: ToolRegistry;
   private readonly executor: ToolExecutor;
   private readonly memory: ConversationMemory;
@@ -297,6 +316,8 @@ export class SvaraAgent extends EventEmitter {
 
     this.systemPrompt = config.systemPrompt
       ?? `You are ${config.name}, a helpful and friendly AI assistant. Be concise and accurate.`;
+    this.hostPrompt = config.hostPrompt?.trim() ?? '';
+    this.timezone = validTimezone(config.timezone);
 
     // Resolve LLM config from model name
     this.llmConfig = resolveConfig(config.model, {
@@ -477,6 +498,12 @@ export class SvaraAgent extends EventEmitter {
    *   .addTool(emailTool)
    *   .addTool(databaseTool);
    */
+  /** Adds a lookup that runs before every model call (see ContextProvider). */
+  addContextProvider(provider: ContextProvider): this {
+    this.contextProviders.push(provider);
+    return this;
+  }
+
   addTool(tool: Tool): this {
     // Map public Tool to internal format
     const internal: InternalTool = {
@@ -770,7 +797,18 @@ export class SvaraAgent extends EventEmitter {
       sessionId: msg.sessionId,
       userId: msg.userId,
       images: msg.images,
+      // Lets tools answer "here" (e.g. a schedule that reports back to this same chat)
+      metadata: { channel: msg.channel, target: msg.sessionId },
     });
+  }
+
+  /**
+   * Adds an assistant message to a session as if the agent had said it, e.g. the result of a scheduled run reported
+   * back into the chat it was set up from. Shows up in the session's history for the user and for the model.
+   */
+  async appendAssistantMessage(sessionId: string, content: string, metadata?: Record<string, unknown>): Promise<void> {
+    if (this.memory.hasSession(sessionId)) await this.memory.append(sessionId, [{ role: 'assistant', content }]);
+    if (this.persistMemory) this.db.saveMessage({ id: crypto.randomUUID(), sessionId, role: 'assistant', content, metadata });
   }
 
   private async run(message: string, options: AgentRunOptions): Promise<AgentRunResult> {
@@ -803,9 +841,15 @@ export class SvaraAgent extends EventEmitter {
       ? externalHistory.map((m) => ({ role: m.role, content: m.content }))
       : await this.memory.getHistory(sessionId);
 
+    // Every step of this turn, streamed as it happens and saved with the reply
+    const trace = new TraceRecorder(
+      { model: this.llmConfig.model, origin: options.metadata?.channel ? String(options.metadata.channel) : undefined, question: message },
+      (phase, step) => this.emit('trace:step', { sessionId, phase, step }),
+    );
+
     // RAG retrieval
     let ragContext = '';
-    let retrievedDocuments: Array<{ source: string; score: number; excerpt: string }> = [];
+    let retrievedDocuments: RetrievedDocument[] = [];
     if (this.knowledgeBase && this.retriever) {
       ragContext = await this.knowledgeBase.retrieve(message);
       // Also retrieve chunks to get document metadata and scores
@@ -821,11 +865,34 @@ export class SvaraAgent extends EventEmitter {
       }
     }
 
+    // Host lookups (e.g. the user's Svaramind workspace), all at once, each bounded
+    const providerTexts: string[] = [];
+    await Promise.all(this.contextProviders.map(async (p) => {
+      const step = trace.start('context', p.name);
+      try {
+        const out = await p.run(message, { sessionId, metadata: options.metadata ?? {} });
+        if (!out) { trace.remove(step); return; }
+        const docs = out.documents ?? [];
+        if (out?.text) providerTexts.push(out.text);
+        retrievedDocuments.push(...docs);
+        trace.end(step, {
+          note: out?.note ?? (docs.length ? `${docs.length} found` : 'Nothing relevant found'),
+          items: docs.slice(0, 8).map((d) => ({ title: d.source, excerpt: clip(d.excerpt, 240), score: d.score, link: d.link })),
+        });
+      } catch (err) {
+        trace.end(step, { status: 'error', error: clip((err as Error).message, 300) });
+      }
+    }));
+
     let systemPrompt = this.systemPrompt;
+    if (this.hostPrompt) systemPrompt += `\n\n${this.hostPrompt}`;
     systemPrompt += `\n\nCurrent date/time: ${new Date().toLocaleString('en-US', {
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-      hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-    })}`;
+      hour: '2-digit', minute: '2-digit', timeZoneName: 'short', timeZone: this.timezone,
+    })}${this.timezone ? ` (${this.timezone})` : ''}`;
+    const origin = options.metadata?.channel;
+    if (origin) systemPrompt += `\nThis message came in through: ${String(origin)}.`;
+    for (const text of providerTexts) systemPrompt += `\n\n${text}`;
     if (this.learningMemory) {
       const { agent: agentNotes, user: userNotes } = await this.learningMemory.load();
       // Once either file grows past a few thousand chars, dumping it whole
@@ -881,7 +948,22 @@ export class SvaraAgent extends EventEmitter {
       this.log('debug', `Iteration ${iterations}`);
 
       const allTools = this.tools.getAll();
-      const llmResponse = await this.llm.chat(messages, allTools, this.llmConfig.temperature);
+      const llmStep = trace.start('llm', `Model call ${iterations}`, { iteration: iterations });
+      let llmResponse: LLMResponse;
+      try {
+        llmResponse = await this.llm.chat(messages, allTools, this.llmConfig.temperature);
+      } catch (err) {
+        trace.end(llmStep, { status: 'error', error: clip((err as Error).message, 400) });
+        throw err;
+      }
+      trace.end(llmStep, {
+        usage: { promptTokens: llmResponse.usage.promptTokens, completionTokens: llmResponse.usage.completionTokens },
+        tools: llmResponse.toolCalls?.map((tc) => tc.name),
+        // With tool calls, the text is the model's plan for them; without, it is the answer (not repeated here)
+        thinking: llmResponse.toolCalls?.length && llmResponse.content ? clip(llmResponse.content, 1200) : undefined,
+        reasoning: llmResponse.reasoning ? clip(llmResponse.reasoning, 2000) : undefined,
+        note: llmResponse.toolCalls?.length ? undefined : 'Wrote the answer',
+      });
 
       totalUsage.promptTokens += llmResponse.usage.promptTokens;
       totalUsage.completionTokens += llmResponse.usage.completionTokens;
@@ -908,7 +990,12 @@ export class SvaraAgent extends EventEmitter {
       });
 
       // Execute all tool calls concurrently
+      const toolSteps = new Map(llmResponse.toolCalls.map((tc) => [tc.id, trace.start('tool', tc.name, { iteration: iterations, args: clip(tc.arguments, 500) })]));
       const results = await this.executor.executeAll(llmResponse.toolCalls, internalCtx);
+      for (const r of results) {
+        const st = toolSteps.get(r.toolCallId);
+        if (st) trace.end(st, r.error ? { status: 'error', error: clip(r.error, 400) } : { result: clip(r.result, 700) });
+      }
 
       for (const result of results) {
         toolsUsed.push(result.name);
@@ -945,6 +1032,8 @@ export class SvaraAgent extends EventEmitter {
       attachments.push(attachment);
     }
 
+    const turnTrace = trace.finish();
+
     // Persist to memory (in-process cache, always) and SQLite (survives restarts) - unless the caller owns history
     if (!externalHistory) await this.memory.append(sessionId, [
       { role: 'user', content: message },
@@ -959,6 +1048,8 @@ export class SvaraAgent extends EventEmitter {
       }
       if (retrievedDocuments.length > 0) assistantMetadata.retrievedDocuments = retrievedDocuments;
       if (attachments.length > 0) assistantMetadata.attachments = attachments;
+      assistantMetadata.trace = turnTrace;
+      assistantMetadata.duration = Date.now() - startTime;
 
       this.db.saveMessage({ id: crypto.randomUUID(), sessionId, role: 'user', content: message });
       this.db.saveMessage({
@@ -979,6 +1070,7 @@ export class SvaraAgent extends EventEmitter {
       duration: Date.now() - startTime,
       attachments: attachments.length > 0 ? attachments : undefined,
       retrievedDocuments: retrievedDocuments.length > 0 ? retrievedDocuments : undefined,
+      trace: turnTrace,
     };
 
     this.emit('message:sent', { response: finalResponse, sessionId });
@@ -1078,3 +1170,14 @@ export class SvaraAgent extends EventEmitter {
 
 // Export RAGRetriever interface
 export type { RAGRetriever };
+
+/** A time zone name Intl understands, or undefined (an unknown name would make every date call throw). */
+export function validTimezone(tz: string | undefined): string | undefined {
+  if (!tz) return undefined;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz });
+    return tz;
+  } catch {
+    return undefined;
+  }
+}

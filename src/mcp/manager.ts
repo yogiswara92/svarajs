@@ -213,6 +213,11 @@ export class McpManager {
     return [...this.connections.values()].map((c) => this.toStatus(c));
   }
 
+  /** The default values pinned on a connection (e.g. Svaramind's chosen workspace_id), or {} when not connected. */
+  getPinned(id: string): Record<string, unknown> {
+    return { ...(this.connections.get(id)?.pinnedParams ?? {}) };
+  }
+
   isConnected(id: string): boolean {
     return this.connections.has(id);
   }
