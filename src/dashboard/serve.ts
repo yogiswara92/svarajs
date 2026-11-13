@@ -51,6 +51,8 @@ import { PRIVATE_NODE_MAJOR, envWithPrivateNode, installNodeAndRebuild, nodeMajo
 import { getRegisteredFile } from '../tools/builtin/sendFile.js';
 import type { McpManager } from '../mcp/manager.js';
 import { searchMcpRegistry, resolveRegistryServer } from '../mcp/registry.js';
+import { authorizeUrl, discoverOAuth, exchangeCode, newState, oauthServerConfig, pkcePair, registerClient } from '../mcp/oauth.js';
+import { testEmailConfig, type EmailConfig } from '../tools/builtin/email.js';
 import type { McpServerConfig } from '../mcp/types.js';
 import {
   SVARAMIND_SERVER_ID, SVARAMIND_APP_URL,
@@ -82,6 +84,34 @@ function cleanupExpiredSvaramindFlows(): void {
   for (const [state, flow] of pendingSvaramindFlows) {
     if (flow.createdAt < cutoff) pendingSvaramindFlows.delete(state);
   }
+}
+
+// Sign-ins for any OAuth MCP server (src/mcp/oauth.ts), kept the same way: by state, for a few minutes
+interface PendingAppFlow {
+  id: string;
+  name: string;
+  url: string;
+  verifier: string;
+  clientId: string;
+  clientSecret?: string;
+  tokenEndpoint: string;
+  resource: string;
+  redirectUri: string;
+  createdAt: number;
+}
+const pendingAppFlows = new Map<string, PendingAppFlow>();
+function cleanupExpiredAppFlows(): void {
+  const cutoff = Date.now() - SVARAMIND_FLOW_TTL_MS;
+  for (const [state, flow] of pendingAppFlows) if (flow.createdAt < cutoff) pendingAppFlows.delete(state);
+}
+
+function appResultPage(opts: { ok: boolean; name: string; message: string }): string {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${escapeHtml(opts.name)}</title>
+<meta http-equiv="refresh" content="${opts.ok ? '2' : '0'}; url=/dashboard/#/mcp">
+<style>body{font-family:-apple-system,system-ui,sans-serif;background:#0f1115;color:#e6e6e6;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;}
+.card{max-width:360px;padding:24px;}h1{font-size:16px;}p{color:#9aa1ac;font-size:14px;}</style>
+</head><body><div class="card"><h1>${opts.ok ? `Connected to ${escapeHtml(opts.name)}` : 'Could not connect'}</h1><p>${escapeHtml(opts.message)}</p></div></body></html>`;
 }
 
 function escapeHtml(s: string): string {
@@ -245,6 +275,43 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
       res.send(svaramindResultPage({ ok: true, message: 'Redirecting you back to the dashboard...' }));
     } catch (err) {
       res.status(502).send(svaramindResultPage({ ok: false, message: (err as Error).message }));
+    }
+  }));
+
+  // Any OAuth MCP app (Notion, Linear, Atlassian, ...): the app's own sign-in page sends the browser back here
+  expressApp.get('/mcp/oauth/callback', asyncRoute(async (req, res) => {
+    const { code, state, error: oauthError, error_description: oauthDesc } = req.query;
+    const flow = typeof state === 'string' ? pendingAppFlows.get(state) : undefined;
+    const name = flow?.name ?? 'the app';
+    if (oauthError) {
+      res.status(400).send(appResultPage({ ok: false, name, message: String(oauthDesc || oauthError) }));
+      return;
+    }
+    if (!flow) {
+      res.status(400).send(appResultPage({ ok: false, name, message: 'This sign-in link expired or was already used. Go back and connect again.' }));
+      return;
+    }
+    pendingAppFlows.delete(state as string);
+    if (!opts.mcpManager || typeof code !== 'string') {
+      res.status(400).send(appResultPage({ ok: false, name, message: 'The app did not return an authorization code.' }));
+      return;
+    }
+    try {
+      const tokens = await exchangeCode({ tokenEndpoint: flow.tokenEndpoint, resource: flow.resource }, {
+        code, redirectUri: flow.redirectUri, verifier: flow.verifier, clientId: flow.clientId, clientSecret: flow.clientSecret,
+      });
+      const config = oauthServerConfig({ id: flow.id, name: flow.name, url: flow.url, tokens, clientId: flow.clientId, clientSecret: flow.clientSecret, tokenUrl: flow.tokenEndpoint, resource: flow.resource });
+      if (opts.mcpManager.isConnected(flow.id)) await opts.mcpManager.disconnect(flow.id);
+      await opts.mcpManager.connect(config);
+      if (opts.configPath) {
+        const current = await readRawConfig(opts.configPath);
+        const servers = Array.isArray(current.mcpServers) ? (current.mcpServers as Array<{ id?: string }>).filter((s) => s.id !== flow.id) : [];
+        servers.push(config);
+        await saveRuntimeConfig(opts.configPath, { ...current, mcpServers: servers });
+      }
+      res.send(appResultPage({ ok: true, name: flow.name, message: 'You can close this window.' }));
+    } catch (err) {
+      res.status(502).send(appResultPage({ ok: false, name: flow.name, message: (err as Error).message }));
     }
   }));
 
@@ -1498,6 +1565,44 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
     }
   }));
 
+  // Checks a mailbox before it is saved: { address, password, imapHost, smtpHost, ... } (a saved password is used when "[set]")
+  api.post('/tools/email/test', express.json(), asyncRoute(async (req, res) => {
+    const b = { ...(req.body ?? {}) } as EmailConfig;
+    if ((!b.password || b.password === '[set]') && opts.configPath) {
+      const saved = (await loadRuntimeConfig(opts.configPath)).tools.email;
+      if (saved?.password) b.password = saved.password;
+    }
+    if (!b.address || !b.password || !b.imapHost || !b.smtpHost) { res.status(400).json({ ok: false, message: 'Address, password, IMAP server and SMTP server are required.' }); return; }
+    try {
+      res.json({ ok: true, message: await testEmailConfig(b) });
+    } catch (err) {
+      res.json({ ok: false, message: (err as Error).message });
+    }
+  }));
+
+  // One-click sign-in for any remote MCP app that supports OAuth: { url, id?, name? } -> { authorizeUrl }
+  api.post('/mcp/oauth/start', express.json(), asyncRoute(async (req, res) => {
+    if (!opts.mcpManager) { res.status(400).json({ error: 'MCP is not enabled on this runtime.' }); return; }
+    const b = req.body ?? {};
+    let url: URL;
+    try { url = new URL(String(b.url || '')); } catch { res.status(400).json({ error: 'A valid https URL of the app\'s MCP server is required.' }); return; }
+    if (url.protocol !== 'https:') { res.status(400).json({ error: 'Only https MCP servers can be connected with a sign-in.' }); return; }
+    const id = String(b.id || url.hostname.replace(/^mcp\./, '').split('.')[0]).toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 40) || 'app';
+    const name = String(b.name || id).slice(0, 60);
+    try {
+      cleanupExpiredAppFlows();
+      const info = await discoverOAuth(url.toString());
+      const redirectUri = `${publicBaseOf(req) ?? `${req.protocol}://${req.get('host')}`}/mcp/oauth/callback`;
+      const client = await registerClient(info, redirectUri, b.clientName ? String(b.clientName).slice(0, 60) : 'SvaraJS');
+      const { verifier, challenge } = pkcePair();
+      const state = newState();
+      pendingAppFlows.set(state, { id, name, url: url.toString(), verifier, clientId: client.clientId, clientSecret: client.clientSecret, tokenEndpoint: info.tokenEndpoint, resource: info.resource, redirectUri, createdAt: Date.now() });
+      res.json({ authorizeUrl: authorizeUrl(info, { clientId: client.clientId, redirectUri, challenge, state }), id });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
+    }
+  }));
+
   api.get('/svaramind/workspaces', asyncRoute(async (_req, res) => {
     if (!opts.mcpManager?.isConnected(SVARAMIND_SERVER_ID)) { res.status(400).json({ error: 'Svaramind is not connected.' }); return; }
     try {
@@ -1614,10 +1719,12 @@ export function mergeConfigUpdates(current: Record<string, unknown>, updates: Re
     const currentTools = (current.tools as Record<string, unknown>) ?? {};
     const updateTools = updates.tools as Record<string, unknown>;
     const mergedTools: Record<string, unknown> = { ...currentTools };
-    for (const key of ['terminal', 'filesystem', 'web', 'browser']) {
+    for (const key of ['terminal', 'filesystem', 'web', 'browser', 'email']) {
       if (!(key in updateTools)) continue;
       const newVal = updateTools[key];
       const oldVal = currentTools[key];
+      // The mailbox is an object or nothing: switching it off removes it (and its stored password)
+      if (key === 'email' && !newVal) { delete mergedTools.email; continue; }
       if (newVal === true && oldVal && typeof oldVal === 'object') {
         // Re-toggling on with a bare `true` (the Capabilities page's simple
         // switch) - keep the richer object (e.g. web's searchApiKey) as-is.

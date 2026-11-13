@@ -33,6 +33,9 @@ import { McpManager } from '../mcp/manager.js';
 import { SVARAMIND_SERVER_ID, refreshSvaramindConfig } from '../integrations/svaramind.js';
 import { createSvaramindSaveFileTool } from '../integrations/svaramindFiles.js';
 import { createSvaramindContextProvider } from '../integrations/svaramindContext.js';
+import { needsRefresh, refreshOAuthConfig } from '../mcp/oauth.js';
+import { createEmailTools } from '../tools/builtin/email.js';
+import type { McpServerConfig } from '../mcp/types.js';
 
 export interface StandaloneRuntime {
   agent: SvaraAgent;
@@ -93,6 +96,10 @@ export async function startStandaloneRuntime(
   }
   if (config.tools.web) {
     createWebTools(toolOpts(config.tools.web)).forEach((t) => agent.addTool(t));
+  }
+  if (config.tools.email?.address && config.tools.email.password) {
+    const fs = config.tools.filesystem ? toolOpts(config.tools.filesystem) as { rootDir?: string; backend?: 'local' | 'docker'; dockerContainer?: string } : undefined;
+    createEmailTools(config.tools.email, fs ? { rootDir: fs.rootDir, backend: fs.backend, dockerContainer: fs.dockerContainer } : undefined).forEach((t) => agent.addTool(t));
   }
   if (config.tools.browser) {
     createBrowserTools(toolOpts(config.tools.browser)).forEach((t) => agent.addTool(t));
@@ -180,11 +187,40 @@ export async function startStandaloneRuntime(
           await saveRuntimeConfig(configPath, { ...current, mcpServers: servers });
         }
       }
+      if (server.oauth?.standard) toConnect = await renewOAuthServer(server);
       await mcpManager.connect(toConnect);
     } catch (err) {
       console.warn(`[@yesvara/svara] MCP server "${server.name}" failed to connect: ${(err as Error).message}`);
     }
   }
+
+  // Apps signed in with OAuth (Notion, Linear, ...) hand out tokens that last about an hour: renew them while running,
+  // not only at boot, and keep the rotated refresh token
+  async function renewOAuthServer(server: McpServerConfig, skewMs?: number): Promise<McpServerConfig> {
+    const renewed = await refreshOAuthConfig(server, skewMs);
+    if (renewed !== server) {
+      const current = await readRawConfig(configPath);
+      const servers = Array.isArray(current.mcpServers) ? (current.mcpServers as Array<{ id?: string }>).map((s) => (s.id === server.id ? renewed : s)) : [renewed];
+      await saveRuntimeConfig(configPath, { ...current, mcpServers: servers });
+    }
+    return renewed;
+  }
+  const oauthTimer = setInterval(async () => {
+    try {
+      const current = await loadRuntimeConfig(configPath);
+      for (const server of current.mcpServers) {
+        if (!server.oauth?.standard || !needsRefresh(server, 10 * 60 * 1000)) continue;
+        try {
+          const renewed = await renewOAuthServer(server, 10 * 60 * 1000);
+          if (mcpManager.isConnected(server.id)) await mcpManager.disconnect(server.id);
+          await mcpManager.connect(renewed);
+        } catch (err) {
+          console.warn(`[@yesvara/svara] renewing the sign-in of "${server.name}" failed: ${(err as Error).message}`);
+        }
+      }
+    } catch { /* config unreadable this time; try again on the next tick */ }
+  }, 5 * 60 * 1000);
+  oauthTimer.unref?.();
 
   const app = new SvaraApp({ cors: true });
 
@@ -255,6 +291,7 @@ export async function startStandaloneRuntime(
   const shutdown = async (): Promise<void> => {
     await supervisor?.stopAll();
     scheduler?.stopAll();
+    clearInterval(oauthTimer);
     await mcpManager.disconnectAll();
     await closeBrowser();
     await agent.stop();

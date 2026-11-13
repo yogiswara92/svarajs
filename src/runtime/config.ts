@@ -106,6 +106,18 @@ const RuntimeConfigSchema = z.object({
     filesystem: ToolConfigSchema.optional(),
     web: ToolConfigSchema.optional(),
     browser: ToolConfigSchema.optional(),
+    /** The agent's own mailbox (IMAP + SMTP), see tools/builtin/email.ts. The password is encrypted at rest. */
+    email: z.object({
+      address: z.string(),
+      password: z.string(),
+      username: z.string().optional(),
+      imapHost: z.string(),
+      imapPort: z.number().optional(),
+      smtpHost: z.string(),
+      smtpPort: z.number().optional(),
+      fromName: z.string().optional(),
+      sendMode: z.enum(['confirm', 'direct']).optional(),
+    }).optional(),
   }).default({}),
 
   skillsDir: z.string().optional(),
@@ -183,6 +195,9 @@ const RuntimeConfigSchema = z.object({
       tokenUrl: z.string(),
       headerName: z.string(),
       expiresAt: z.number().optional(),
+      standard: z.boolean().optional(),
+      clientSecret: z.string().optional(),
+      resource: z.string().optional(),
     }).optional(),
   })).default([]),
 

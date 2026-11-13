@@ -32,6 +32,11 @@ export interface McpServerConfig {
     headerName: string;
     /** Unix ms when the access token in transport.headers expires - lets a refresh be skipped if it's still good, instead of unconditionally rotating (and burning) the refresh token on every restart. Optional for back-compat with configs saved before this field existed. */
     expiresAt?: number;
+    /** Standard MCP OAuth (src/mcp/oauth.ts): form-encoded token requests, renewed while running. */
+    standard?: boolean;
+    clientSecret?: string;
+    /** RFC 8707 resource the token is bound to. */
+    resource?: string;
   };
 }
 
