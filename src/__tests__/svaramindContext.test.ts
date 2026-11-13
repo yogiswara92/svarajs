@@ -6,7 +6,9 @@ function fakeMcp(answers: Record<string, unknown>, connected = true) {
   return {
     isConnected: () => connected,
     getPinned: () => ({ workspace_id: 'home' }),
-    callToolDirect: vi.fn(async (_id: string, _tool: string, args: Record<string, unknown>) => JSON.stringify(answers[String(args.workspace_id)] ?? { success: true, results: [] })),
+    callToolDirect: vi.fn(async (_id: string, tool: string, args: Record<string, unknown>) => tool === 'svaramind_list_workspaces'
+      ? JSON.stringify({ workspaces: [{ id: 'home', name: 'Agent' }, { id: 'other', name: 'Telkom' }] })
+      : JSON.stringify(answers[String(args.workspace_id)] ?? { success: true, results: [] })),
   } as unknown as McpManager & { callToolDirect: ReturnType<typeof vi.fn> };
 }
 
@@ -20,7 +22,9 @@ describe('Svaramind context provider', () => {
     });
     const p = createSvaramindContextProvider(mcp, { workspaces: ['other'] });
     const out = await p.run('Who is our vendor for the Bandung branch?', ctx);
-    expect(mcp.callToolDirect).toHaveBeenCalledTimes(2);
+    expect(mcp.callToolDirect).toHaveBeenCalledTimes(3);
+    expect(out?.text).toMatch(/workspace "Agent" \(workspace_id home\)/);
+    expect(out?.text).toMatch(/From workspace "Agent"/);
     expect(out?.documents?.map((d) => d.source)).toEqual(['Budget 2026', 'Vendor meeting']);
     expect(out?.documents?.[1].link).toBe('https://mind/doc/d1');
     expect(out?.text).toMatch(/PT Maju - supplies/);
@@ -38,7 +42,11 @@ describe('Svaramind context provider', () => {
 
   it('drops loose matches and survives a failing workspace', async () => {
     const mcp = fakeMcp({ home: { success: true, weak_match: true, results: [{ title: 'Unrelated', chunk_text: 'x', score: 0.2 }] } });
-    (mcp.callToolDirect as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => { throw new Error('down'); });
+    const real = (mcp.callToolDirect as ReturnType<typeof vi.fn>).getMockImplementation()!;
+    (mcp.callToolDirect as ReturnType<typeof vi.fn>).mockImplementation(async (id: string, tool: string, args: Record<string, unknown>) => {
+      if (args?.workspace_id === 'broken') throw new Error('down');
+      return real(id, tool, args);
+    });
     const p = createSvaramindContextProvider(mcp, { workspaces: ['broken'] });
     const out = await p.run('Tell me about the unrelated thing please', ctx);
     expect(out?.documents ?? []).toHaveLength(0);

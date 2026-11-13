@@ -11,7 +11,7 @@ import type { ContextProvider, RetrievedDocument } from '../core/types.js';
 import { SVARAMIND_SERVER_ID } from './svaramind.js';
 
 export interface SvaramindContextOptions {
-  /** Workspaces to search (at most 4 are searched). Default: the pinned workspace. */
+  /** Workspaces to search (at most 6 are searched). Default: the pinned workspace. */
   workspaces?: string[];
   /** Results per workspace. @default 4 */
   limit?: number;
@@ -22,6 +22,7 @@ export interface SvaramindContextOptions {
 }
 
 interface SearchResult {
+  workspace_id: string;
   success?: boolean;
   results?: Array<{ document_id?: string; title?: string; chunk_text?: string; score?: number; link?: string }>;
   knowledge_graph?: string | null;
@@ -34,6 +35,21 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
   Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`no answer within ${ms / 1000}s`)), ms))]);
 
 export function createSvaramindContextProvider(mcp: McpManager, opts: SvaramindContextOptions = {}): ContextProvider {
+  // Workspace names, asked once in a while (they rarely change)
+  let names: { at: number; map: Map<string, string> } | null = null;
+  async function workspaceNames(): Promise<Map<string, string>> {
+    if (names && Date.now() - names.at < 10 * 60_000) return names.map;
+    const map = new Map<string, string>();
+    try {
+      const raw = await withTimeout(mcp.callToolDirect(SVARAMIND_SERVER_ID, 'svaramind_list_workspaces', {}), 5000);
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      const list = Array.isArray(parsed) ? parsed : parsed?.workspaces ?? [];
+      for (const w of list) if (w?.id) map.set(String(w.id), String(w.name ?? ''));
+    } catch { /* names are a nicety: ids still work */ }
+    names = { at: Date.now(), map };
+    return map;
+  }
+
   const limit = opts.limit ?? 4;
   const minChars = opts.minChars ?? 12;
   const timeoutMs = opts.timeoutMs ?? 12000;
@@ -44,13 +60,18 @@ export function createSvaramindContextProvider(mcp: McpManager, opts: SvaramindC
       if (!mcp.isConnected(SVARAMIND_SERVER_ID)) return null;
       if (q.length < minChars || SMALL_TALK.test(q)) return null;
       const pinned = mcp.getPinned(SVARAMIND_SERVER_ID).workspace_id;
-      const ids = [...new Set([...(opts.workspaces ?? []), ...(pinned ? [String(pinned)] : [])])].slice(0, 4);
+      const ids = [...new Set([...(opts.workspaces ?? []), ...(pinned ? [String(pinned)] : [])])].slice(0, 6);
       if (!ids.length) return null;
+      const names = await workspaceNames();
+      const label = (id: string) => `workspace "${names.get(id) || 'unknown'}" (workspace_id ${id})`;
 
+      // Knowledge in Svaramind is kept per workspace: every passage and fact says which one it came from, so new facts
+      // about the same project are recorded there too
       const answers = await Promise.all(ids.map(async (workspace_id) => {
         try {
           const raw = await withTimeout(mcp.callToolDirect(SVARAMIND_SERVER_ID, 'svaramind_search', { workspace_id, query: q.slice(0, 1000), limit }), timeoutMs);
-          return typeof raw === 'string' ? JSON.parse(raw) as SearchResult : raw as SearchResult;
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) as SearchResult : raw as SearchResult;
+          return parsed ? { ...parsed, workspace_id } : null;
         } catch {
           return null;
         }
@@ -61,12 +82,12 @@ export function createSvaramindContextProvider(mcp: McpManager, opts: SvaramindC
       const graph: string[] = [];
       for (const a of answers) {
         if (!a?.success) continue;
-        if (a.knowledge_graph) graph.push(String(a.knowledge_graph).slice(0, 2500));
+        if (a.knowledge_graph) graph.push(`From ${label(a.workspace_id)}:\n${String(a.knowledge_graph).slice(0, 2500)}`);
         for (const r of a.results ?? []) {
           if (a.weak_match && (r.score ?? 0) < 0.35) continue;
           const text = String(r.chunk_text ?? '').slice(0, 1200);
           docs.push({ source: r.title || 'Untitled', score: Math.round((r.score ?? 0) * 100) / 100, excerpt: text.slice(0, 200), link: r.link });
-          passages.push(`[${r.title || 'Untitled'}${r.document_id ? ` | document_id ${r.document_id}` : ''}${r.link ? ` | ${r.link}` : ''}]\n${text}`);
+          passages.push(`[${r.title || 'Untitled'} | ${label(a.workspace_id)}${r.document_id ? ` | document_id ${r.document_id}` : ''}${r.link ? ` | ${r.link}` : ''}]\n${text}`);
         }
       }
       docs.sort((a, b) => b.score - a.score);
