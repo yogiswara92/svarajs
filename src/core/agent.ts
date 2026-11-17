@@ -968,6 +968,7 @@ export class SvaraAgent extends EventEmitter {
       totalUsage.promptTokens += llmResponse.usage.promptTokens;
       totalUsage.completionTokens += llmResponse.usage.completionTokens;
       totalUsage.totalTokens += llmResponse.usage.totalTokens;
+      if (typeof llmResponse.usage.cost === 'number') totalUsage.cost = (totalUsage.cost ?? 0) + llmResponse.usage.cost;
 
       // No tool calls - agent has a final answer
       if (!llmResponse.toolCalls?.length) {

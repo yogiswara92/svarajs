@@ -136,6 +136,7 @@ class OpenAIAdapter implements LLMAdapter {
         promptTokens: response.usage.prompt_tokens,
         completionTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,
+        ...(typeof response.usage.cost === 'number' ? { cost: response.usage.cost } : {}),
       },
       model: response.model,
       finishReason: choice.finish_reason === 'tool_calls' ? 'tool_calls' : 'stop',
@@ -428,7 +429,7 @@ interface OpenAIResponse {
     };
     finish_reason: string;
   }>;
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost?: number };
   model: string;
 }
 

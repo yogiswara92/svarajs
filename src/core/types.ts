@@ -60,6 +60,8 @@ export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  /** What the provider billed, in USD, when it says (OpenRouter returns usage.cost). Summed over a turn. */
+  cost?: number;
 }
 
 // ─── Tool Internals ───────────────────────────────────────────────────────────
