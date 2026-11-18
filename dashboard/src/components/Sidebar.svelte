@@ -44,8 +44,8 @@
   <div class="brand" style="display:flex;align-items:center;gap:10px;">
     <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:32px;height:32px;border-radius:8px;flex-shrink:0;" />
     <span style="display:flex;flex-direction:column;line-height:1.05;">
-      <strong style="font-size:16px;font-weight:750;color:var(--text-primary, #0f172a);letter-spacing:-0.02em;">SvaraJS</strong>
-      <small style="font-size:9.5px;font-weight:500;letter-spacing:0.04em;color:var(--text-secondary, #475569);">by <strong>YESVARA</strong></small>
+      <strong style="font-size:17px;font-weight:800;color:var(--text-primary, #0f172a);letter-spacing:-0.02em;">SvaraJS</strong>
+      <small style="font-size:8px;font-weight:500;letter-spacing:0.12em;margin-top:2px;color:var(--text-secondary, #64748b);">by <strong style="font-weight:700;color:#d6a823;">YESVARA</strong></small>
     </span>
   </div>
   <div class="agent-card" title="{agentName || 'Agent'} - online">

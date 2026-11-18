@@ -30,11 +30,11 @@
 
 <div class="login-page">
   <form class="login-card" on:submit|preventDefault={submit}>
-    <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:16px;">
+    <div style="display:inline-flex;align-items:center;gap:11px;margin-bottom:16px;">
       <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:38px;height:38px;border-radius:10px;" />
       <span style="display:flex;flex-direction:column;text-align:left;line-height:1.05;">
-        <strong style="font-size:18px;font-weight:750;color:var(--text-primary, #0f172a);letter-spacing:-0.02em;">SvaraJS</strong>
-        <small style="font-size:10px;font-weight:500;letter-spacing:0.04em;color:var(--text-secondary, #475569);">by <strong>YESVARA</strong></small>
+        <strong style="font-size:21px;font-weight:800;color:#eaf1f6;letter-spacing:-0.02em;">SvaraJS</strong>
+        <small style="font-size:9px;font-weight:500;letter-spacing:0.12em;margin-top:2px;color:#9eb3c2;">by <strong style="font-weight:700;color:#f5c842;">YESVARA</strong></small>
       </span>
     </div>
     <h1>{agentName ? `Sign in to ${agentName}` : 'Sign in'}</h1>
@@ -65,7 +65,7 @@
 </div>
 
 <style>
-  .login-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: var(--background); }
+  .login-page { --background: #011620; --surface: #01212e; --border: rgba(0, 180, 216, 0.22); --primary: #00b4d8; --text-primary: #eaf1f6; --text-secondary: #9eb3c2; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1.5rem; background: var(--background); color: var(--text-primary); }
   .login-card { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border); border-radius: 0.9rem; padding: 2rem 1.75rem; display: flex; flex-direction: column; gap: 1rem; }
   .logo { height: 34px; width: auto; align-self: flex-start; }
   .logo-dark { display: none; }
