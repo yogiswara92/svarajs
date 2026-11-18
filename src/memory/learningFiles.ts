@@ -44,6 +44,55 @@ export interface LearningSnapshot {
 const ENTRY_PREFIX = '§ ';
 const DANGEROUS_CATEGORIES = new Set<ThreatMatch['category']>(['destructive', 'exfiltration']);
 
+// A new entry that's at least this similar to an existing one supersedes it
+// in place instead of piling on as a near-duplicate line - without this,
+// a background-review pass that re-decides "this is worth saving" on every
+// turn (it has no visibility into what's already saved - see
+// backgroundReview.ts) silently grows the file with the same fact restated
+// a dozen times, which then dominates every future system prompt.
+const DUPLICATE_THRESHOLD = 0.6;
+
+function wordSet(text: string): Set<string> {
+  return new Set(text.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const word of a) if (b.has(word)) intersection++;
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+// Below this, the whole file is cheap enough to just inject as-is - no need
+// to score/rank a handful of entries.
+const RELEVANCE_FILTER_THRESHOLD_CHARS = 2000;
+
+/**
+ * Picks the entries most relevant to `query` (current user message) instead
+ * of the whole file, once the file has grown past a size where dumping it
+ * whole into every system prompt would drown out the actual current turn -
+ * see agent.ts's run(). Ties (including "nothing matched at all") fall back
+ * to the most recently-added entries, so a generic message still gets some
+ * memory instead of none.
+ */
+export function selectRelevantNotes(notes: string, query: string, maxEntries = 12): string {
+  if (!notes || notes.length <= RELEVANCE_FILTER_THRESHOLD_CHARS) return notes;
+
+  const lines = notes.split('\n').filter(Boolean);
+  const queryWords = wordSet(query);
+  const scored = lines.map((line, index) => ({
+    line,
+    index,
+    score: [...queryWords].filter((w) => wordSet(line).has(w)).length,
+  }));
+
+  scored.sort((a, b) => b.score - a.score || b.index - a.index);
+  const picked = scored.slice(0, maxEntries);
+  picked.sort((a, b) => a.index - b.index); // restore file order for readability
+  return picked.map((p) => p.line).join('\n');
+}
+
 export class DangerousContentError extends Error {
   constructor(file: LearningFile, public readonly findings: ThreatMatch[]) {
     super(`[SvaraJS] Refusing to write to "${file}": ${findings.map((f) => f.description).join('; ')}`);
@@ -92,8 +141,23 @@ export class LearningMemory {
     assertSafe(file, entry);
     const snapshot = await this.load();
     const existing = file === 'MEMORY.md' ? snapshot.agent : snapshot.user;
+    const lines = existing ? existing.split('\n').filter(Boolean) : [];
     const line = `${ENTRY_PREFIX}${entry.trim()}`;
-    await this.commit(file, existing ? `${existing}\n${line}` : line);
+
+    const newWords = wordSet(entry);
+    let bestIndex = -1;
+    let bestScore = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const score = jaccard(newWords, wordSet(lines[i].slice(ENTRY_PREFIX.length)));
+      if (score > bestScore) { bestScore = score; bestIndex = i; }
+    }
+
+    if (bestIndex !== -1 && bestScore >= DUPLICATE_THRESHOLD) {
+      lines[bestIndex] = line; // near-duplicate - supersede it in place instead of piling on
+    } else {
+      lines.push(line);
+    }
+    await this.commit(file, lines.join('\n'));
   }
 
   /** Replace the first entry whose text includes `match` with `entry`. */

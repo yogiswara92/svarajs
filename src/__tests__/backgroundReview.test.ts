@@ -121,6 +121,37 @@ describe('BackgroundReview', () => {
     expect(adapter.chat).toHaveBeenCalledTimes(2);
   });
 
+  it('shows the model existing related notes so it can avoid re-saving a near-duplicate', async () => {
+    const memory = new LearningMemory({ dir });
+    await memory.add('MEMORY.md', 'User workspace Telkom is the primary project environment for Sitroom Setneg.');
+
+    const adapter = fakeAdapter(textResponse('already covered, nothing to add'));
+    const review = new BackgroundReview({ adapter, memory });
+    review.reviewAsync({
+      sessionId: 's1',
+      userMessage: 'reminder: Telkom workspace is for Sitroom Setneg',
+      assistantResponse: 'Got it, already noted.',
+    });
+    await waitFor(() => (adapter.chat as ReturnType<typeof vi.fn>).mock.calls.length >= 1);
+
+    const messages = (adapter.chat as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const userMessage = messages.find((m: { role: string }) => m.role === 'user');
+    expect(userMessage.content).toContain('Possibly-related existing notes');
+    expect(userMessage.content).toContain('Sitroom Setneg');
+  });
+
+  it('omits the existing-notes block entirely when memory is empty', async () => {
+    const adapter = fakeAdapter(textResponse('nothing worth saving'));
+    const memory = new LearningMemory({ dir });
+    const review = new BackgroundReview({ adapter, memory });
+    review.reviewAsync({ sessionId: 's1', userMessage: 'hi', assistantResponse: 'hello' });
+    await waitFor(() => (adapter.chat as ReturnType<typeof vi.fn>).mock.calls.length >= 1);
+
+    const messages = (adapter.chat as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const userMessage = messages.find((m: { role: string }) => m.role === 'user');
+    expect(userMessage.content).not.toContain('Possibly-related existing notes');
+  });
+
   it('reviewAsync never throws, even if the adapter rejects', async () => {
     const adapter: LLMAdapter = {
       chat: vi.fn().mockRejectedValue(new Error('LLM unavailable')),

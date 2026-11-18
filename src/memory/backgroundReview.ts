@@ -20,7 +20,7 @@ import type { InternalAgentContext, InternalTool, LLMMessage } from '../core/typ
 import type { Tool } from '../types.js';
 import { createMemoryTool } from './learningTools.js';
 import { createSkillTools, type SkillToolsOptions } from '../skills/tools.js';
-import type { LearningMemory } from './learningFiles.js';
+import { selectRelevantNotes, type LearningMemory } from './learningFiles.js';
 import type { SkillRegistry } from '../skills/registry.js';
 
 export interface BackgroundReviewOptions {
@@ -50,6 +50,10 @@ const REVIEW_SYSTEM_PROMPT = [
   'Most exchanges have nothing worth saving - in that case, call no tools at all. Do not save',
   'transient details (the specific question asked, one-off facts) or anything already obviously',
   'covered by an existing skill. Be selective; a memory/skill file that accumulates noise stops being useful.',
+  '',
+  'If "Possibly-related existing notes" is shown below, check it first - if the fact is already',
+  'captured there (even worded differently), do not add it again. Use the memory tool\'s "replace"',
+  'action instead of "add" if this exchange refines or corrects one of those existing notes.',
 ].join('\n');
 
 function toInternalTool(tool: Tool): InternalTool {
@@ -85,9 +89,15 @@ export class BackgroundReview {
       metadata: {},
     };
 
+    const existingNotesBlock = await this.describeExistingNotes(exchange);
     const messages: LLMMessage[] = [
       { role: 'system', content: REVIEW_SYSTEM_PROMPT },
-      { role: 'user', content: `User: ${exchange.userMessage}\n\nAssistant: ${exchange.assistantResponse}` },
+      {
+        role: 'user',
+        content: existingNotesBlock
+          ? `${existingNotesBlock}\n\n---\n\nUser: ${exchange.userMessage}\n\nAssistant: ${exchange.assistantResponse}`
+          : `User: ${exchange.userMessage}\n\nAssistant: ${exchange.assistantResponse}`,
+      },
     ];
 
     const maxIterations = this.opts.maxIterations ?? 3;
@@ -105,6 +115,27 @@ export class BackgroundReview {
         messages.push({ role: 'tool', content, toolCallId: call.id, name: call.name });
       }
     }
+  }
+
+  /**
+   * Without this, the review pass decides whether to save purely from the
+   * current exchange - it has no way to know a near-identical fact was
+   * already saved last turn, so a recurring topic (the same project, the
+   * same recurring instruction) gets re-saved as a fresh near-duplicate
+   * entry every single time. Showing it the entries most relevant to this
+   * exchange lets it skip re-saving (or use "replace" instead of "add")
+   * when appropriate - see the dedup note in learningFiles.ts's add() for
+   * the storage-layer half of this fix.
+   */
+  private async describeExistingNotes(exchange: ReviewExchange): Promise<string> {
+    if (!this.opts.memory) return '';
+    const { agent, user } = await this.opts.memory.load();
+    const query = `${exchange.userMessage} ${exchange.assistantResponse}`;
+    const parts = [
+      agent && `Agent notes (MEMORY.md):\n${selectRelevantNotes(agent, query)}`,
+      user && `User notes (USER.md):\n${selectRelevantNotes(user, query)}`,
+    ].filter(Boolean);
+    return parts.length === 0 ? '' : `Possibly-related existing notes:\n\n${parts.join('\n\n')}`;
   }
 
   private buildTools(): InternalTool[] {
