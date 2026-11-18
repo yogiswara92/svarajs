@@ -33,8 +33,8 @@
     <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:16px;">
       <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:38px;height:38px;border-radius:10px;" />
       <span style="display:flex;flex-direction:column;text-align:left;line-height:1.15;">
-        <strong style="font-size:18px;font-weight:750;">SvaraJS Worker</strong>
-        <small style="font-size:11px;opacity:0.7;">Autonomous agent</small>
+        <strong style="font-size:18px;font-weight:750;color:var(--text-primary, #0f172a);">SvaraJS</strong>
+        <small style="font-size:11px;color:var(--text-secondary, #475569);">Agentic AI Framework by Yesvara</small>
       </span>
     </div>
     <h1>{agentName ? `Sign in to ${agentName}` : 'Sign in'}</h1>

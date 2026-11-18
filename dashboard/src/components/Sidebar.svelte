@@ -44,8 +44,8 @@
   <div class="brand" style="display:flex;align-items:center;gap:10px;">
     <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:30px;height:30px;border-radius:8px;flex-shrink:0;" />
     <span style="display:flex;flex-direction:column;line-height:1.1;">
-      <strong style="font-size:15px;font-weight:750;">SvaraJS Worker</strong>
-      <small style="font-size:10px;opacity:0.7;">Autonomous agent</small>
+      <strong style="font-size:15px;font-weight:750;color:var(--text-primary, #0f172a);">SvaraJS</strong>
+      <small style="font-size:9.5px;color:var(--text-secondary, #475569);">Agentic AI Framework by Yesvara</small>
     </span>
   </div>
   <div class="agent-card" title="{agentName || 'Agent'} - online">
