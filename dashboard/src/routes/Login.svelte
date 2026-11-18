@@ -32,9 +32,9 @@
   <form class="login-card" on:submit|preventDefault={submit}>
     <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:16px;">
       <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:38px;height:38px;border-radius:10px;" />
-      <span style="display:flex;flex-direction:column;text-align:left;line-height:1.15;">
-        <strong style="font-size:18px;font-weight:750;color:var(--text-primary, #0f172a);">SvaraJS</strong>
-        <small style="font-size:11px;color:var(--text-secondary, #475569);">Agentic AI Framework by Yesvara</small>
+      <span style="display:flex;flex-direction:column;text-align:left;line-height:1.05;">
+        <strong style="font-size:18px;font-weight:750;color:var(--text-primary, #0f172a);letter-spacing:-0.02em;">SvaraJS</strong>
+        <small style="font-size:10px;font-weight:500;letter-spacing:0.04em;color:var(--text-secondary, #475569);">by <strong>YESVARA</strong></small>
       </span>
     </div>
     <h1>{agentName ? `Sign in to ${agentName}` : 'Sign in'}</h1>
