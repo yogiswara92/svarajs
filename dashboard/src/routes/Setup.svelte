@@ -58,8 +58,13 @@
 
 <div class="page">
   <div class="card-box">
-    <img src="{base}svarajs-logo.png" alt="SvaraJS" class="logo logo-light" />
-    <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="logo logo-dark" />
+    <div style="display:inline-flex;align-items:center;gap:10px;margin-bottom:16px;">
+      <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:38px;height:38px;border-radius:10px;" />
+      <span style="display:flex;flex-direction:column;text-align:left;line-height:1.15;">
+        <strong style="font-size:18px;font-weight:750;">SvaraJS Worker</strong>
+        <small style="font-size:11px;opacity:0.7;">Autonomous agent</small>
+      </span>
+    </div>
     <h1>{agentName ? `Set up ${agentName}` : 'Set up your dashboard'}</h1>
 
     {#if error}<div class="error-text" role="alert">{error}</div>{/if}

@@ -41,9 +41,12 @@
 </script>
 
 <aside class="sidebar" class:open>
-  <div class="brand">
-    <img src="{base}svarajs-logo.png" alt="SvaraJS" class="brand-logo brand-logo-light" />
-    <img src="{base}svarajs-logo-white.png" alt="SvaraJS" class="brand-logo brand-logo-dark" />
+  <div class="brand" style="display:flex;align-items:center;gap:10px;">
+    <img src="{base}svarajs-icon.svg" alt="SvaraJS" style="width:30px;height:30px;border-radius:8px;flex-shrink:0;" />
+    <span style="display:flex;flex-direction:column;line-height:1.1;">
+      <strong style="font-size:15px;font-weight:750;">SvaraJS Worker</strong>
+      <small style="font-size:10px;opacity:0.7;">Autonomous agent</small>
+    </span>
   </div>
   <div class="agent-card" title="{agentName || 'Agent'} - online">
     <div class="avatar" style="background: {avatarBg}" aria-hidden="true">{initial}</div>
