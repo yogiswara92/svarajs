@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="16 16 128 128" width="100%" height="100%" role="img" aria-label="SvaraJS Worker">
+  <defs>
+    <linearGradient id="sjGrad" x1="15%" y1="85%" x2="85%" y2="15%">
+      <stop offset="0%" stop-color="#00A8A3" />
+      <stop offset="52%" stop-color="#00B4D8" />
+      <stop offset="100%" stop-color="#F5C842" />
+    </linearGradient>
+  </defs>
+  <g transform="translate(10, 10)">
+    <rect x="8" y="8" width="124" height="124" rx="30" fill="#01212E" />
+    <!-- Exact SvaraJS Worker S-mark from DashboardLayout.svelte -->
+    <g transform="translate(70, 70) scale(5.2) translate(-12, -12.3)">
+      <path
+        fill="url(#sjGrad)"
+        d="M18.2 4C18.2 6.8 16.3 8.4 13.5 8.4H10.2C8.7 8.4 8 9 8 10C8 11 8.7 11.6 10.2 11.6H13.8C17.2 11.6 19.2 13.3 19.2 16C19.2 18.8 17.2 20.6 13.8 20.6H5.8C5.8 17.8 7.7 16.2 10.5 16.2H13.8C15.3 16.2 16 15.6 16 14.6C16 13.6 15.3 13 13.8 13H10.2C6.8 13 4.8 11.3 4.8 8.6C4.8 5.8 6.8 4 10.2 4H18.2Z"
+      />
+    </g>
+  </g>
+</svg>
