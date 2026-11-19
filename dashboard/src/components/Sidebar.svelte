@@ -214,7 +214,8 @@
     align-items: center;
     gap: 0.65rem;
     padding: 0.6rem 0.75rem;
-    border-radius: 0.5rem;
+    border-radius: 0.6875rem;
+    border: 1px solid transparent;
     color: var(--text-secondary);
     font-size: 0.9rem;
     font-weight: 500;
@@ -226,9 +227,14 @@
   }
 
   nav a.active {
-    background: color-mix(in srgb, var(--primary) 12%, transparent);
-    color: var(--primary-dark);
+    background: color-mix(in srgb, var(--primary) 13%, transparent);
+    border-color: color-mix(in srgb, var(--primary) 35%, transparent);
+    color: var(--text-primary);
     font-weight: 600;
+  }
+
+  nav a.active .icon {
+    color: var(--primary);
   }
 
   .icon {

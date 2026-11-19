@@ -205,33 +205,37 @@
 <style>
   :global(:root) {
     --primary: #008ca8;
-    --primary-dark: #00708a;
+    --primary-dark: #00748c;
     --primary-light: #00b4d8;
     --accent: #d6a823;
     --danger: #ef4444;
     --danger-dark: #dc2626;
     --success: #00a8a3;
 
-    --background: #f4f9fb;
+    --background: #f8fafc;
     --surface: #ffffff;
-    --surface-alt: #eaf4f7;
-    --border: rgba(1, 33, 46, 0.14);
+    --surface-alt: #f0f9ff;
+    --border: #e2e8f0;
     --text-primary: #0f172a;
-    --text-secondary: #334155;
+    --text-secondary: #475569;
     --text-muted: #64748b;
+    --shadow-card: 0 4px 20px -4px rgba(15, 23, 42, 0.05);
+    --shadow-card-hover: 0 18px 40px -15px rgba(0, 140, 168, 0.2);
   }
 
   @media (prefers-color-scheme: dark) {
     :global(:root) {
       --primary: #00b4d8;
-      --primary-dark: #00a8a3;
+      --primary-dark: #0096c7;
       --background: #011620;
-      --surface: #01212e;
-      --surface-alt: #032d42;
-      --border: rgba(0, 180, 216, 0.22);
+      --surface: #03283a;
+      --surface-alt: #043248;
+      --border: rgba(0, 180, 216, 0.18);
       --text-primary: #eaf1f6;
-      --text-secondary: #cbd5e1;
-      --text-muted: #9eb3c2;
+      --text-secondary: #c3d3dd;
+      --text-muted: #94adb8;
+      --shadow-card: none;
+      --shadow-card-hover: none;
     }
   }
 
@@ -307,7 +311,7 @@
     justify-content: center;
     gap: 0.4rem;
     padding: 0.55rem 1.1rem;
-    border-radius: 0.5rem;
+    border-radius: 0.625rem;
     font-size: 0.875rem;
     font-weight: 600;
     font-family: inherit;
@@ -365,8 +369,9 @@
   :global(.card) {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.75rem;
+    border-radius: 1.125rem;
     padding: 1.25rem;
+    box-shadow: var(--shadow-card);
   }
   :global(.card-label) {
     font-size: 0.8rem;
@@ -413,9 +418,9 @@
     width: 2.25rem;
     height: 2.25rem;
     flex-shrink: 0;
-    border-radius: 0.6rem;
-    background: var(--surface-alt);
-    color: var(--text-secondary);
+    border-radius: 0.75rem;
+    background: color-mix(in srgb, var(--primary) 12%, transparent);
+    color: var(--primary);
     font-size: 1.2rem;
   }
   :global(.card-header-title) {
@@ -433,7 +438,7 @@
   :global(.list-item) {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.65rem;
+    border-radius: 0.875rem;
     padding: 0.9rem 1.1rem;
   }
   :global(.list-item.clickable) {
@@ -473,7 +478,7 @@
     border-collapse: collapse;
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 0.65rem;
+    border-radius: 1.125rem;
     overflow: hidden;
     margin-bottom: 1.5rem;
   }
