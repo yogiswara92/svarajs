@@ -162,6 +162,8 @@ export interface AgentRunResult {
   attachments?: Attachment[];
   /** Step-by-step record of the turn (see core/trace.ts). */
   trace?: import('./trace.js').TurnTrace;
+  /** Set when the turn ended early (step limit, time limit, a repeating tool) and the response is a progress report. */
+  stopped?: 'steps' | 'time' | 'loop';
 }
 
 // ─── Memory Internals ────────────────────────────────────────────────────────

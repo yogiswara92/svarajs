@@ -43,6 +43,8 @@ const RuntimeConfigSchema = z.object({
    * before that safety net kicks in, not a different kind of safety.
    */
   maxIterations: z.number().int().positive().optional(),
+  /** Longest one message may keep working, in ms (0 = no limit). Default 15 minutes. */
+  maxRunMs: z.number().int().nonnegative().optional(),
   knowledge: z.union([z.string(), z.array(z.string())]).optional(),
 
   /**

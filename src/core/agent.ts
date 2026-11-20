@@ -72,6 +72,7 @@ import { SvaraDB } from '../database/sqlite.js';
 import { ToolExecutor } from '../tools/executor.js';
 import { drainPendingTokens, getRegisteredFile } from '../tools/builtin/sendFile.js';
 import { TraceRecorder, clip } from './trace.js';
+import { pruneToolResults, RepeatGuard, wrapUpPrompt, fallbackStop, type StopReason } from './loopGuard.js';
 import type { Tool } from '../types.js';
 
 // ─── Channel Interface (implemented in channels/) ─────────────────────────────
@@ -166,6 +167,12 @@ export interface AgentConfig {
    * Prevents infinite loops. Default: 10
    */
   maxIterations?: number;
+
+  /**
+   * Longest a single message may keep working, in milliseconds (0 = no limit). When it is up the agent stops calling
+   * tools and reports its progress instead of cutting off. Default: 15 minutes
+   */
+  maxRunMs?: number;
 
   /**
    * Advanced: override LLM provider or add custom endpoint.
@@ -278,6 +285,7 @@ export class SvaraAgent extends EventEmitter {
   private readonly context: ContextBuilder;
   private readonly compressor: ContextCompressor;
   private readonly maxIterations: number;
+  private readonly maxRunMs: number;
   private readonly verbose: boolean;
   private readonly persistMemory: boolean;
 
@@ -311,6 +319,7 @@ export class SvaraAgent extends EventEmitter {
 
     this.name = config.name;
     this.maxIterations = config.maxIterations ?? 10;
+    this.maxRunMs = config.maxRunMs ?? 15 * 60_000;
     this.verbose = config.verbose ?? false;
     this.dbPath = config.dbPath ?? `./data/${config.name}.db`;
 
@@ -942,10 +951,16 @@ export class SvaraAgent extends EventEmitter {
     const totalUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let iterations = 0;
     let finalResponse = '';
+    let stopReason: StopReason | undefined;
+    const repeats = new RepeatGuard();
+    const runUntil = this.maxRunMs > 0 ? startTime + this.maxRunMs : Infinity;
 
-    while (iterations < this.maxIterations) {
+    while (iterations < this.maxIterations && !stopReason) {
+      if (Date.now() > runUntil) { stopReason = 'time'; break; }
       iterations++;
       this.log('debug', `Iteration ${iterations}`);
+      // old page listings and big outputs the model has moved past are cut down so a long turn never fills its context
+      if (iterations > 1) pruneToolResults(messages);
 
       const allTools = this.tools.getAll();
       const llmStep = trace.start('llm', `Model call ${iterations}`, { iteration: iterations });
@@ -1000,9 +1015,16 @@ export class SvaraAgent extends EventEmitter {
 
       for (const result of results) {
         toolsUsed.push(result.name);
-        const content = result.error
+        let content = result.error
           ? `Error executing ${result.name}: ${result.error}`
           : JSON.stringify(result.result, null, 2);
+        // the same call giving the same answer again and again is a loop: say so, and in the end stop it
+        const call = llmResponse.toolCalls.find((tc) => tc.id === result.toolCallId);
+        const seen = repeats.record(result.name, call?.arguments, content);
+        if (seen.verdict !== 'ok') {
+          content += `\n\n[Notice: this exact call has now returned the same result ${seen.repeats} times. Repeating it will not help. Try something different, or give the user your answer.]`;
+          if (seen.verdict === 'stop') stopReason = 'loop';
+        }
 
         messages.push({
           role: 'tool',
@@ -1018,7 +1040,21 @@ export class SvaraAgent extends EventEmitter {
     }
 
     if (!finalResponse) {
-      finalResponse = `I've reached the reasoning limit for this request. Please try a simpler question.`;
+      // out of steps or time (or stuck): one last call without tools so the person gets a progress report, not a cut-off
+      stopReason ??= 'steps';
+      const wrapStep = trace.start('llm', 'Progress report', { iteration: iterations });
+      try {
+        const wrap = await this.llm.chat([...messages, { role: 'user', content: wrapUpPrompt(stopReason, iterations) }], [], this.llmConfig.temperature);
+        totalUsage.promptTokens += wrap.usage.promptTokens;
+        totalUsage.completionTokens += wrap.usage.completionTokens;
+        totalUsage.totalTokens += wrap.usage.totalTokens;
+        if (typeof wrap.usage.cost === 'number') totalUsage.cost = (totalUsage.cost ?? 0) + wrap.usage.cost;
+        finalResponse = wrap.content?.trim() || fallbackStop(stopReason, iterations, toolsUsed);
+        trace.end(wrapStep, { note: `Stopped (${stopReason})` });
+      } catch (err) {
+        finalResponse = fallbackStop(stopReason, iterations, toolsUsed);
+        trace.end(wrapStep, { status: 'error', error: clip((err as Error).message, 300) });
+      }
     }
 
     // Any files the send_file tool queued this turn - resolved to their
@@ -1048,6 +1084,7 @@ export class SvaraAgent extends EventEmitter {
         assistantMetadata.iterations = iterations;
       }
       if (retrievedDocuments.length > 0) assistantMetadata.retrievedDocuments = retrievedDocuments;
+      if (stopReason) assistantMetadata.stopped = stopReason;
       if (attachments.length > 0) assistantMetadata.attachments = attachments;
       assistantMetadata.trace = turnTrace;
       assistantMetadata.duration = Date.now() - startTime;
@@ -1072,6 +1109,7 @@ export class SvaraAgent extends EventEmitter {
       attachments: attachments.length > 0 ? attachments : undefined,
       retrievedDocuments: retrievedDocuments.length > 0 ? retrievedDocuments : undefined,
       trace: turnTrace,
+      stopped: stopReason,
     };
 
     this.emit('message:sent', { response: finalResponse, sessionId });

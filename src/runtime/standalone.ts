@@ -65,6 +65,7 @@ export async function startStandaloneRuntime(
     auxiliaryModel: config.auxiliaryModel,
     contextWindow: config.contextWindow,
     maxIterations: config.maxIterations,
+    maxRunMs: config.maxRunMs,
     knowledge: config.knowledge,
     llm: agentLlmOptions(config.llm),
     embeddings: config.embeddings,

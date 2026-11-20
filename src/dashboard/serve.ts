@@ -838,6 +838,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         iterations: result.iterations,
         usage: result.usage,
         duration: result.duration,
+        stopped: result.stopped,
       });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
@@ -897,6 +898,7 @@ export function mountDashboard(app: SvaraApp, opts: DashboardOptions): void {
         iterations: result.iterations,
         usage: result.usage,
         duration: result.duration,
+        stopped: result.stopped,
         trace: result.trace,
       })}\n`);
     } catch (err) {
