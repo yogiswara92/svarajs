@@ -48,7 +48,16 @@ describe('RepeatGuard', () => {
     expect(g.record('snapshot', {}, 'page B').verdict).toBe('ok');
     expect(g.record('snapshot', {}, 'page B').verdict).toBe('warn');
     expect(g.record('snapshot', {}, 'page B').verdict).toBe('warn');
+    expect(g.record('snapshot', {}, 'page B').verdict).toBe('warn');
     expect(g.record('snapshot', {}, 'page B').verdict).toBe('stop');
+  });
+
+  it('never calls waiting or looking at the screen a loop', () => {
+    const g = new RepeatGuard();
+    for (let i = 0; i < 12; i++) {
+      expect(g.record('mcp__browser__browser_wait', { seconds: 5 }, 'same page').verdict).toBe('ok');
+      expect(g.record('mcp__browser__browser_screenshot', {}, 'Screenshot of https://x').verdict).toBe('ok');
+    }
   });
 
   it('treats different arguments as different calls', () => {
@@ -110,7 +119,7 @@ describe('a turn that has to stop early', () => {
     next = (n) => (wrapping(n) ? { role: 'assistant', content: 'I was stuck.' } : call('step', { n: 1 }));
     const result = await make({ maxIterations: 30 }, async () => ({ same: true })).process('go', { sessionId: 's2' });
     expect(result.stopped).toBe('loop');
-    expect(result.iterations).toBe(5);
+    expect(result.iterations).toBe(6);
     const toolTexts = bodies[bodies.length - 1].messages.filter((m) => m.role === 'tool').map((m) => m.content);
     expect(toolTexts.some((t) => t.includes('Notice: this exact call'))).toBe(true);
   });

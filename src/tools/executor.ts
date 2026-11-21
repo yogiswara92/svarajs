@@ -23,11 +23,9 @@ export class ToolExecutor {
       };
     }
 
+    const limit = this.timeout(tool.timeout ?? 30_000, tool.name);
     try {
-      const result = await Promise.race([
-        tool.run(call.arguments, ctx),
-        this.timeout(tool.timeout ?? 30_000, tool.name),
-      ]);
+      const result = await Promise.race([tool.run(call.arguments, ctx), limit.promise]);
       return { toolCallId: call.id, name: call.name, result, duration: Date.now() - start };
     } catch (err) {
       const message = (err as Error).message;
@@ -39,6 +37,8 @@ export class ToolExecutor {
         error: message,
         duration: Date.now() - start,
       };
+    } finally {
+      limit.cancel();
     }
   }
 
@@ -46,9 +46,11 @@ export class ToolExecutor {
     return Promise.all(calls.map((c) => this.execute(c, ctx)));
   }
 
-  private timeout(ms: number, name: string): Promise<never> {
-    return new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${ms}ms`)), ms)
-    );
+  private timeout(ms: number, name: string): { promise: Promise<never>; cancel: () => void } {
+    let timer: ReturnType<typeof setTimeout>;
+    const promise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Tool "${name}" timed out after ${ms}ms`)), ms);
+    });
+    return { promise, cancel: () => clearTimeout(timer) };
   }
 }

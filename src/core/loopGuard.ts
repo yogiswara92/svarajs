@@ -65,6 +65,9 @@ function fnv(text: string): string {
   return `${text.length}:${(h >>> 0).toString(36)}`;
 }
 
+// Tools whose job is to look again later: not a loop however many times they return the same thing
+const PATIENT = /(^|_)(wait|sleep|screenshot|poll)(_|$)/i;
+
 export type RepeatVerdict = 'ok' | 'warn' | 'stop';
 
 /**
@@ -77,11 +80,13 @@ export class RepeatGuard {
   constructor(
     /** Identical call + identical result this many times in a row: tell the model to do something else. @default 2 */
     private warnAfter = 2,
-    /** ... and this many: end the turn. @default 4 */
-    private stopAfter = 4,
+    /** ... and this many: end the turn. @default 5 */
+    private stopAfter = 5,
   ) {}
 
   record(name: string, args: unknown, result: string): { verdict: RepeatVerdict; repeats: number } {
+    // Waiting for something slow, or looking at the screen (the picture is not part of the text), repeats on purpose
+    if (PATIENT.test(name)) return { verdict: 'ok', repeats: 1 };
     const key = `${name}\n${typeof args === 'string' ? args : JSON.stringify(args ?? {})}`;
     const hash = fnv(result);
     const have = this.seen.get(key);

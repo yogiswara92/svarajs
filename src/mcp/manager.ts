@@ -108,6 +108,9 @@ interface Connection {
   connectedAt: string;
 }
 
+/** How long one MCP tool call may take before it is given up on. */
+const MCP_TOOL_TIMEOUT_MS = 120_000;
+
 export class McpManager {
   private connections = new Map<string, Connection>();
 
@@ -154,10 +157,12 @@ export class McpManager {
         name: toolName,
         description: `[MCP:${config.name}] ${mcpTool.description ?? mcpTool.name}`,
         parameters: jsonSchemaToParameters(mcpTool.inputSchema, pinnedParams),
+        // pages load, workflows run: far more than the 30s a built-in tool gets (the MCP client's own limit is lifted to match)
+        timeout: MCP_TOOL_TIMEOUT_MS,
         async run(args) {
           // pinnedParams first, args after - a value the LLM actually passed
           // always wins; the pin only fills in when it's left out.
-          const result = await client.callTool({ name: mcpTool.name, arguments: { ...pinnedParams, ...args } });
+          const result = await client.callTool({ name: mcpTool.name, arguments: { ...pinnedParams, ...args } }, undefined, { timeout: MCP_TOOL_TIMEOUT_MS });
           if (result.isError) {
             throw new Error(extractText(result.content) || `MCP tool "${mcpTool.name}" reported an error.`);
           }

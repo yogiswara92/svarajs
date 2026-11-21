@@ -89,7 +89,7 @@ describe('McpManager', () => {
 
     const tool = agent._tools.get('mcp__s1__echo');
     const result = await tool.run({ text: 'hi' }, {});
-    expect(mockClientInstance.callTool).toHaveBeenCalledWith({ name: 'echo', arguments: { text: 'hi' } });
+    expect(mockClientInstance.callTool).toHaveBeenCalledWith({ name: 'echo', arguments: { text: 'hi' } }, undefined, { timeout: 120_000 });
     expect(result).toBe('hello back');
   });
 
@@ -174,11 +174,11 @@ describe('McpManager', () => {
 
     // Omitting workspace_id - the pin is injected automatically.
     await tool.run({ query: 'hello' }, {});
-    expect(mockClientInstance.callTool).toHaveBeenCalledWith({ name: 'search', arguments: { workspace_id: 'ws-123', query: 'hello' } });
+    expect(mockClientInstance.callTool).toHaveBeenCalledWith({ name: 'search', arguments: { workspace_id: 'ws-123', query: 'hello' } }, undefined, { timeout: 120_000 });
 
     // Explicitly passing a different workspace_id - it wins over the pin.
     await tool.run({ query: 'hello', workspace_id: 'ws-other' }, {});
-    expect(mockClientInstance.callTool).toHaveBeenLastCalledWith({ name: 'search', arguments: { workspace_id: 'ws-other', query: 'hello' } });
+    expect(mockClientInstance.callTool).toHaveBeenLastCalledWith({ name: 'search', arguments: { workspace_id: 'ws-other', query: 'hello' } }, undefined, { timeout: 120_000 });
   });
 
   it('pinParameter() on an unconnected server throws', () => {
